@@ -46,6 +46,7 @@ class VibrisCoreEngine internal constructor(
     replayCaptureRoot: Path? = null,
     replayerRoot: Path? = null,
     bundledReplayJava: Path? = null,
+    private val jobActivityObserver: JobActivityObserver = JobActivityObserver.none(),
 ) : AutoCloseable {
     private val requests = RequestRegistry<TerminalResult>(
         LIVE_REQUEST_CAPACITY,
@@ -464,6 +465,7 @@ class VibrisCoreEngine internal constructor(
                 stateChangedLocked("lease-acquired", job.submission.jobId)
             }
             started = true
+            notifyJobActivity(true)
             probe.jobStarted(job.requestId)
             probe.event(job.requestId, "ACQUIRED_LEASE")
             val terminal = executor.execute(job) { stage -> sendProgress(job, stage) }
@@ -520,9 +522,23 @@ class VibrisCoreEngine internal constructor(
                 !failure.holdOwnership,
             )
         } finally {
-            if (started) probe.jobStopped()
+            if (started) {
+                try {
+                    probe.jobStopped()
+                } finally {
+                    notifyJobActivity(false)
+                }
+            }
             Thread.interrupted()
             updateMetrics()
+        }
+    }
+
+    private fun notifyJobActivity(active: Boolean) {
+        try {
+            jobActivityObserver.activityChanged(active)
+        } catch (_: Exception) {
+            // Observability must never affect job execution or terminal delivery.
         }
     }
 

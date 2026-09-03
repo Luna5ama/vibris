@@ -44,6 +44,39 @@ class RuntimeLeaseStatusTest {
     lateinit var temp: Path
 
     @Test
+    fun jobActivityObserverCoversOnlyActiveLeasesAndPairsConsecutiveJobs() {
+        val runtime = RuntimeTestAdapter()
+        val pending = temp.resolve("observer-pending").toAbsolutePath()
+        Files.createDirectories(pending)
+        val events = CopyOnWriteArrayList<Boolean>()
+        val engine = VibrisCoreEngine(
+            pending,
+            runtime,
+            ShaderLink.transientLink(),
+            ShaderLogSink.none(),
+            jobActivityObserver = JobActivityObserver(events::add),
+        )
+        val firstReload = CompletableFuture<ReloadResult>()
+        runtime.reloadStages.add(firstReload)
+        val first = recordingSession()
+        val second = recordingSession()
+
+        engine.submit(first.session, loadJob("observer-first", source(pending), false))
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (events.isEmpty() && System.nanoTime() < deadline) Thread.onSpinWait()
+        engine.submit(second.session, loadJob("observer-second", source(pending), false))
+
+        assertEquals(listOf(true), events)
+        engine.statusSnapshot()
+        assertEquals(listOf(true), events)
+        firstReload.complete(ReloadResult.success(EffectiveShaderSettings.empty(), emptyList()))
+        assertTrue(first.terminal.await(2, TimeUnit.SECONDS))
+        assertTrue(second.terminal.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf(true, false, true, false), events)
+        engine.close()
+    }
+
+    @Test
     fun cancellationRetainsLeaseUntilSafePointAndWakesStatusWaiter() {
         val runtime = RuntimeTestAdapter()
         val pending = temp.resolve("pending").toAbsolutePath()

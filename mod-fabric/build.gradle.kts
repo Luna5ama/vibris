@@ -36,6 +36,7 @@ dependencies {
     mappings(loom.officialMojangMappings())
     modImplementation("net.fabricmc:fabric-loader:0.18.1")
     modImplementation("net.fabricmc.fabric-api:fabric-command-api-v2:2.2.20+78d798af4f")
+    modImplementation("net.fabricmc.fabric-api:fabric-key-binding-api-v1:1.1.7+4fc5413f3e")
     modCompileOnly("net.irisshaders:common:$irisVersion")
     modImplementation(files(rootProject.file("../Iris/custom_sodium/sodium-fabric-0.8.6-SNAPSHOT+mc1.21.11-local.jar")))
 

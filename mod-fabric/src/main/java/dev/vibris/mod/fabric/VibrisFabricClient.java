@@ -9,12 +9,20 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.network.chat.Component;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.resources.Identifier;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Path;
 
 public final class VibrisFabricClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
+		KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("vibris", "keybinds"));
+		KeyMapping flameGraph = KeyBindingHelper.registerKeyBinding(
+			new KeyMapping("key.vibris.toggle_flame_graph", GLFW.GLFW_KEY_F10, category));
+		VibrisClient.flameGraph().setToggleKey(flameGraph);
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
 			dispatcher.register(ClientCommandManager.literal("vibris")
 				.then(ClientCommandManager.literal("preset")

@@ -19,6 +19,7 @@ class ShaderDebugControl constructor(
     private val errorLock = Any()
     private val errors = ArrayDeque<ShaderDebugError>()
     private val passStack: ThreadLocal<ArrayDeque<String>> = ThreadLocal.withInitial { ArrayDeque() }
+    private val passTimingStack: ThreadLocal<ArrayDeque<Boolean>> = ThreadLocal.withInitial { ArrayDeque() }
     private val timingStack: ThreadLocal<ArrayDeque<Boolean>> = ThreadLocal.withInitial { ArrayDeque() }
     private val metrics = GpuTimingMetrics()
     private val identityLock = Any()
@@ -82,7 +83,15 @@ class ShaderDebugControl constructor(
 
     fun errorList(): List<ShaderDebugError> = errorSnapshot()
 
+    fun setRealtimeTimingEnabled(enabled: Boolean) = metrics.setRealtimeEnabled(enabled)
+
+    fun beginFrame() = metrics.beginFrame()
+
+    fun drainRealtimeTimings(): List<GpuFrameTiming> = metrics.drainFrames()
+
     fun tickFrame() = metrics.finishFrame()
+
+    fun closeTiming() = metrics.close()
 
     fun captureMetrics(frames: Int): CompletionStage<JsonObject> =
         metrics.capture(frames).thenApply(::metricsJson)
@@ -168,22 +177,23 @@ class ShaderDebugControl constructor(
 
     fun pushPass(name: String) {
         passStack.get().addLast(name)
-        if (metrics.isCapturing()) {
-            metrics.beginAggregate(
+        passTimingStack.get().addLast(
+            metrics.isMeasuringFramework() && metrics.beginAggregate(
                 GpuTimingScope(
                     metric = "${name}_total",
                     kind = GpuTimingScopeKind.FRAMEWORK_TOTAL,
                     frameworkPass = name,
                     stage = null,
                 ),
-            )
-        }
+            ),
+        )
     }
 
     fun popPass() {
         val stack = passStack.get()
         if (stack.isNotEmpty()) {
-            metrics.end()
+            val timings = passTimingStack.get()
+            if (timings.isNotEmpty() && timings.removeLast()) metrics.end()
             stack.removeLast()
         }
     }

@@ -9,6 +9,7 @@ public final class VibrisClient {
 	public static final Logger LOGGER = LoggerFactory.getLogger("Vibris");
 	private static final CaptureManager CAPTURE_MANAGER = new CaptureManager();
 	private static final ShaderDebugControl SHADER_DEBUG_CONTROL = new ShaderDebugControl(new IrisShaderDebugHost());
+	private static final VibrisFlameGraph FLAME_GRAPH = new VibrisFlameGraph();
 
 	private VibrisClient() {
 	}
@@ -21,6 +22,10 @@ public final class VibrisClient {
 		return SHADER_DEBUG_CONTROL;
 	}
 
+	public static VibrisFlameGraph flameGraph() {
+		return FLAME_GRAPH;
+	}
+
 	public static void initializeAutomation() {
 		IrisVibrisLifecycle.initializeAutomation();
 	}
@@ -30,6 +35,8 @@ public final class VibrisClient {
 	}
 
 	public static void close() {
+		FLAME_GRAPH.reset();
+		SHADER_DEBUG_CONTROL.closeTiming();
 		IrisVibrisLifecycle.close();
 	}
 }

@@ -154,7 +154,18 @@ class VibrisBootstrap private constructor(
             runtime: VibrisRuntimeAdapter?,
             restartHandler: RestartHandler?,
         ): VibrisBootstrap {
-            return start(gameDirectory, runtime, restartHandler, ListenerFactory(::startListener))
+            return start(gameDirectory, runtime, restartHandler, JobActivityObserver.none())
+        }
+
+        @JvmStatic
+        @Throws(Failure::class)
+        fun start(
+            gameDirectory: Path?,
+            runtime: VibrisRuntimeAdapter?,
+            restartHandler: RestartHandler?,
+            jobActivityObserver: JobActivityObserver?,
+        ): VibrisBootstrap {
+            return start(gameDirectory, runtime, restartHandler, jobActivityObserver, ListenerFactory(::startListener))
         }
 
         @JvmStatic
@@ -167,6 +178,7 @@ class VibrisBootstrap private constructor(
             gameDirectory,
             runtime,
             RestartHandler(::restartUnavailable),
+            JobActivityObserver.none(),
             listenerFactory,
         )
 
@@ -177,11 +189,28 @@ class VibrisBootstrap private constructor(
             runtime: VibrisRuntimeAdapter?,
             restartHandler: RestartHandler?,
             listenerFactory: ListenerFactory?,
+        ): VibrisBootstrap = start(
+            gameDirectory,
+            runtime,
+            restartHandler,
+            JobActivityObserver.none(),
+            listenerFactory,
+        )
+
+        @JvmStatic
+        @Throws(Failure::class)
+        fun start(
+            gameDirectory: Path?,
+            runtime: VibrisRuntimeAdapter?,
+            restartHandler: RestartHandler?,
+            jobActivityObserver: JobActivityObserver?,
+            listenerFactory: ListenerFactory?,
         ): VibrisBootstrap {
             val game = Objects.requireNonNull(gameDirectory, "gameDirectory")!!.toAbsolutePath().normalize()
             val actualRuntime = Objects.requireNonNull(runtime, "runtime")!!
             val actualRestartHandler = Objects.requireNonNull(restartHandler, "restartHandler")!!
             val actualFactory = Objects.requireNonNull(listenerFactory, "listenerFactory")!!
+            val actualObserver = Objects.requireNonNull(jobActivityObserver, "jobActivityObserver")!!
             val configuration = try {
                 ServerConfiguration.load(game)
             } catch (exception: Exception) {
@@ -198,6 +227,7 @@ class VibrisBootstrap private constructor(
                 configuration,
                 actualRuntime,
                 actualRestartHandler,
+                actualObserver,
                 actualFactory,
                 createRoots = false,
                 notReady = true,
@@ -218,6 +248,7 @@ class VibrisBootstrap private constructor(
                 ServerConfiguration.defaults(actualConfig),
                 actualRuntime,
                 RestartHandler(::restartUnavailable),
+                JobActivityObserver.none(),
                 actualFactory,
                 createRoots = true,
                 notReady = false,
@@ -228,6 +259,7 @@ class VibrisBootstrap private constructor(
             configuration: ServerConfiguration,
             runtime: VibrisRuntimeAdapter,
             restartHandler: RestartHandler,
+            jobActivityObserver: JobActivityObserver,
             listenerFactory: ListenerFactory,
             createRoots: Boolean,
             notReady: Boolean,
@@ -245,7 +277,7 @@ class VibrisBootstrap private constructor(
                 }
                 link.prepare()
                 pendingSources.prepare()
-                service = VibrisControlService(configuration, runtime, link, restartHandler)
+                service = VibrisControlService(configuration, runtime, link, restartHandler, jobActivityObserver)
                 val listener = listenerFactory.start(configuration.address, service)
                 return VibrisBootstrap(service, pendingSources, listener, true, paths.pendingShadersRoot)
             } catch (exception: Exception) {

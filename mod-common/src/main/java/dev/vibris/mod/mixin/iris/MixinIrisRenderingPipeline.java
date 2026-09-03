@@ -57,6 +57,7 @@ public abstract class MixinIrisRenderingPipeline implements VibrisPipeline {
 
 	@Inject(method = "destroy", at = @At("HEAD"), require = 1, expect = 1)
 	private void vibris$closePassCapture(CallbackInfo ci) {
+		VibrisClient.flameGraph().reset();
 		if (vibris$passCapture != null) vibris$passCapture.close();
 	}
 

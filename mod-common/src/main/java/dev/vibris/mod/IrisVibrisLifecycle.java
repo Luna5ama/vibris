@@ -46,7 +46,9 @@ public final class IrisVibrisLifecycle {
 					candidateHost, candidateFrames,
 					IrisVibrisAutomation::frameWaitComplete,
 					IrisVibrisLifecycle::runtimeActivityChanged);
-				bootstrap = VibrisBootstrap.start(gameDirectory, adapter, MinecraftRestartLauncher::restart);
+				bootstrap = VibrisBootstrap.start(
+					gameDirectory, adapter, MinecraftRestartLauncher::restart,
+					VibrisClient.flameGraph()::setJobActive);
 				if (bootstrap.pendingShadersRoot() != null) {
 					candidateHost.configureShaderConfigScratch(bootstrap.pendingShadersRoot());
 				}

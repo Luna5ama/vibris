@@ -1,6 +1,7 @@
 package dev.vibris.mod.mixin.minecraft;
 
 import dev.vibris.mod.IrisVibrisLifecycle;
+import dev.vibris.mod.VibrisClient;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.KeyboardHandler;
 import net.minecraft.client.input.CharacterEvent;
@@ -18,6 +19,7 @@ public class MixinKeyboardHandler_VibrisInputBlock {
 
 	@Inject(method = "keyPress", at = @At("HEAD"), cancellable = true)
 	private void iris$blockKeyPress(long window, int action, KeyEvent event, CallbackInfo ci) {
+		VibrisClient.flameGraph().handleKeyPress(action, event);
 		if (!IrisVibrisLifecycle.shouldBlockUserInput()) return;
 
 		KeyMapping.releaseAll();

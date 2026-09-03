@@ -38,6 +38,20 @@ data class GpuTimingStats(
     val samples: List<Long>,
 )
 
+/** A resolved, non-blocking GPU timing frame. All values are nanoseconds. */
+data class GpuFrameTiming(
+    val totalNanoseconds: Long,
+    val scopes: List<GpuScopeTiming>,
+)
+
+/** A framework timing scope whose start is relative to the enclosing frame root. */
+data class GpuScopeTiming(
+    val name: String,
+    val startNanoseconds: Long,
+    val durationNanoseconds: Long,
+    val children: List<GpuScopeTiming>,
+)
+
 data class GpuTimingProgram @JvmOverloads constructor(
     val program: String,
     val stage: String,

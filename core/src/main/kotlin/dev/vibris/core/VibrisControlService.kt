@@ -36,6 +36,7 @@ class VibrisControlService internal constructor(
     private val runtime: VibrisRuntimeAdapter,
     shaderLink: ShaderLink,
     private val restartHandler: VibrisBootstrap.RestartHandler,
+    jobActivityObserver: JobActivityObserver = JobActivityObserver.none(),
 ) : VibrisControlGrpc.VibrisControlImplBase(), AutoCloseable {
     private val logger = System.getLogger(VibrisControlService::class.java.name)
     private val restartExecutable = configuration.restartExecutable
@@ -60,6 +61,7 @@ class VibrisControlService internal constructor(
         configuration.replayCaptureRoot,
         configuration.replayerRoot,
         configuration.vibrisRoot.resolve("runtime/java/bin/java.exe"),
+        jobActivityObserver,
     )
     private val descriptor = ServerDescriptor(
         configuration.paths.pendingShadersRoot,

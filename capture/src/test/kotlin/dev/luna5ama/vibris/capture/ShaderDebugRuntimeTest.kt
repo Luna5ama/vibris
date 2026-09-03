@@ -85,11 +85,32 @@ class ShaderDebugRuntimeTest {
 
                 val metrics = GpuTimingMetrics()
                 val captured = metrics.capture(1).toCompletableFuture()
-                metrics.begin("test_draw")
+                assertTrue(metrics.begin("test_draw"))
                 glClear(GL_COLOR_BUFFER_BIT)
                 metrics.end()
                 metrics.finishFrame()
                 assertTrue(captured.join().aggregateTimings.getValue("test_draw").p50 >= 0)
+
+                metrics.setRealtimeEnabled(true)
+                metrics.beginFrame()
+                assertTrue(metrics.beginAggregate(
+                    GpuTimingScope("outer_total", GpuTimingScopeKind.FRAMEWORK_TOTAL, "outer", null),
+                ))
+                assertTrue(metrics.beginAggregate(
+                    GpuTimingScope("inner_total", GpuTimingScopeKind.FRAMEWORK_TOTAL, "inner", null),
+                ))
+                glClear(GL_COLOR_BUFFER_BIT)
+                metrics.end()
+                metrics.end()
+                metrics.finishFrame()
+                glFinish()
+                val frame = metrics.drainFrames().single()
+                assertTrue(frame.totalNanoseconds >= 0)
+                assertEquals("outer", frame.scopes.single().name)
+                assertEquals("inner", frame.scopes.single().children.single().name)
+                assertTrue(frame.scopes.single().startNanoseconds >= 0)
+                assertTrue(frame.scopes.single().durationNanoseconds >= 0)
+                metrics.close()
             } finally {
                 glPixelStorei(GL_PACK_SKIP_PIXELS, 0)
                 glPixelStorei(GL_PACK_SWAP_BYTES, 0)
