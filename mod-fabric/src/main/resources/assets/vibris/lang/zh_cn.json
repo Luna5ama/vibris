@@ -1,4 +1,5 @@
 {
   "key.category.vibris.keybinds": "Vibris 控制",
-  "key.vibris.toggle_flame_graph": "切换火焰图"
+  "key.vibris.toggle_flame_graph": "切换火焰图",
+  "key.vibris.pause_flame_graph": "暂停/恢复火焰图更新"
 }

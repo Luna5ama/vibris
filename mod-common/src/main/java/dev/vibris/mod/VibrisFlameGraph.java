@@ -19,11 +19,16 @@ public final class VibrisFlameGraph {
 	private boolean requestedVisible;
 	private boolean effectiveVisible;
 	private KeyMapping toggleKey;
+	private KeyMapping pauseKey;
 	private double viewStart;
 	private double viewSpan = 1.0;
 
 	public void setToggleKey(KeyMapping toggleKey) {
 		this.toggleKey = toggleKey;
+	}
+
+	public void setPauseKey(KeyMapping pauseKey) {
+		this.pauseKey = pauseKey;
 	}
 
 	public void setJobActive(boolean active) {
@@ -32,6 +37,15 @@ public final class VibrisFlameGraph {
 
 	public void handleKeyPress(int action, KeyEvent event) {
 		if (action == 1 && toggleKey != null && toggleKey.matches(event)) requestedVisible = !requestedVisible;
+		if (action == 1 && requestedVisible && pauseKey != null && pauseKey.matches(event)) {
+			model.setPaused(!model.isPaused());
+		}
+	}
+
+	public void handleDrag(double horizontalDelta) {
+		if (!effectiveVisible || jobActive || !Double.isFinite(horizontalDelta)) return;
+		Viewport viewport = panViewport(viewStart, viewSpan, horizontalDelta);
+		viewStart = viewport.start();
 	}
 
 	public void handleScroll(double mouseX, double verticalScroll) {
@@ -42,13 +56,14 @@ public final class VibrisFlameGraph {
 	}
 
 	public void beginFrame() {
+		if (pauseKey != null) while (pauseKey.consumeClick()) { /* Handled directly by KeyboardHandler. */ }
 		if (toggleKey != null) {
 			while (toggleKey.consumeClick()) {
 				// KeyboardHandler toggles directly so the binding also works while a Screen is open.
 			}
 		}
 		synchronizeEffectiveState();
-		if (effectiveVisible) {
+		if (effectiveVisible && !model.isPaused()) {
 			acceptCompleted();
 			VibrisClient.shaderDebugControl().beginFrame();
 		}
@@ -93,11 +108,13 @@ public final class VibrisFlameGraph {
 
 	private void synchronizeEffectiveState() {
 		boolean next = requestedVisible && !jobActive;
-		if (next == effectiveVisible) return;
-		effectiveVisible = next;
-		model.clear();
-		resetViewport();
-		VibrisClient.shaderDebugControl().setRealtimeTimingEnabled(next);
+		if (next != effectiveVisible) {
+			effectiveVisible = next;
+			model.clear();
+			resetViewport();
+		}
+		// Pausing discards in-flight HUD samples, but retains the displayed model and viewport.
+		VibrisClient.shaderDebugControl().setRealtimeTimingEnabled(next && !model.isPaused());
 	}
 
 	private void drawNode(
@@ -180,6 +197,10 @@ public final class VibrisFlameGraph {
 		double worldAnchor = start + anchor * span;
 		double nextStart = Math.max(0.0, Math.min(1.0 - nextSpan, worldAnchor - anchor * nextSpan));
 		return new Viewport(nextStart, nextSpan);
+	}
+
+	static Viewport panViewport(double start, double span, double horizontalDelta) {
+		return new Viewport(Math.max(0.0, Math.min(1.0 - span, start - horizontalDelta * span)), span);
 	}
 
 	private void resetViewport() {

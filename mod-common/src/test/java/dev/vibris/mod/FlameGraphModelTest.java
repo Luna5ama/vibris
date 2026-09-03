@@ -11,6 +11,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FlameGraphModelTest {
 	@Test
+	void pausePreservesSnapshotAndDoesNotAccumulateSkippedSamples() {
+		FlameGraphModel model = new FlameGraphModel();
+		model.accept(frame(100, scope("pass", 0, 40)));
+		FlameGraphModel.Snapshot frozen = model.snapshot();
+		model.setPaused(true);
+		for (int i = 0; i < 100; i++) model.accept(frame(10_000));
+		assertEquals(frozen, model.snapshot());
+		model.setPaused(false);
+		model.accept(frame(200, scope("pass", 0, 80)));
+		assertEquals(150, model.snapshot().frameNanoseconds());
+		assertEquals(60, model.snapshot().shaderNanoseconds());
+		model.setPaused(true);
+		model.clear();
+		assertTrue(!model.isPaused());
+	}
+
+	@Test
+	void horizontalDragTracksViewportScaleAndClampsAtEdges() {
+		assertEquals(new VibrisFlameGraph.Viewport(0.25, 0.5), VibrisFlameGraph.panViewport(0.3, 0.5, 0.1));
+		assertEquals(new VibrisFlameGraph.Viewport(0.35, 0.5), VibrisFlameGraph.panViewport(0.3, 0.5, -0.1));
+		assertEquals(new VibrisFlameGraph.Viewport(0.0, 0.5), VibrisFlameGraph.panViewport(0.3, 0.5, 10.0));
+		assertEquals(new VibrisFlameGraph.Viewport(0.5, 0.5), VibrisFlameGraph.panViewport(0.3, 0.5, -10.0));
+		assertEquals(new VibrisFlameGraph.Viewport(0.0, 1.0), VibrisFlameGraph.panViewport(0.0, 1.0, -1.0));
+	}
+
+	@Test
 	void accumulatesActualPassSamplesThenCapsEmaWindowAtSixtyFourFrames() {
 		FlameGraphModel model = new FlameGraphModel();
 		model.accept(frame(100, scope("first", 10, 40)));

@@ -23,6 +23,8 @@ public final class VibrisFabricClient implements ClientModInitializer {
 		KeyMapping flameGraph = KeyBindingHelper.registerKeyBinding(
 			new KeyMapping("key.vibris.toggle_flame_graph", GLFW.GLFW_KEY_F10, category));
 		VibrisClient.flameGraph().setToggleKey(flameGraph);
+		VibrisClient.flameGraph().setPauseKey(KeyBindingHelper.registerKeyBinding(
+			new KeyMapping("key.vibris.pause_flame_graph", GLFW.GLFW_KEY_F9, category)));
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
 			dispatcher.register(ClientCommandManager.literal("vibris")
 				.then(ClientCommandManager.literal("preset")

@@ -15,14 +15,20 @@ final class FlameGraphModel {
 	private final SampleSeries frameTotals = new SampleSeries();
 	private final Map<String, ScopeState> states = new HashMap<>();
 	private Snapshot snapshot;
+	private boolean paused;
+
+	boolean isPaused() { return paused; }
+	void setPaused(boolean paused) { this.paused = paused; }
 
 	void clear() {
+		paused = false;
 		frameTotals.clear();
 		states.clear();
 		snapshot = null;
 	}
 
 	void accept(GpuFrameTiming frame) {
+		if (paused) return;
 		frameTotals.add(frame.getTotalNanoseconds());
 		Set<String> present = new HashSet<>();
 		List<RawNode> roots = collect(frame.getScopes(), "", 0L, present);

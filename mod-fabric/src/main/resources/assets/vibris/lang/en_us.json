@@ -1,4 +1,5 @@
 {
   "key.category.vibris.keybinds": "Vibris Controls",
-  "key.vibris.toggle_flame_graph": "Toggle Flame Graph"
+  "key.vibris.toggle_flame_graph": "Toggle Flame Graph",
+  "key.vibris.pause_flame_graph": "Pause/Resume Flame Graph"
 }
