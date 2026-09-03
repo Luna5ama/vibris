@@ -11,20 +11,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FlameGraphModelTest {
 	@Test
-	void accumulatesActualSamplesThenCapsEmaWindowAtSixtyFourFrames() {
+	void accumulatesActualPassSamplesThenCapsEmaWindowAtSixtyFourFrames() {
 		FlameGraphModel model = new FlameGraphModel();
 		model.accept(frame(100, scope("first", 10, 40)));
-		assertEquals(100, model.snapshot().totalNanoseconds());
+		assertEquals(100, model.snapshot().frameNanoseconds());
+		assertEquals(40, model.snapshot().shaderNanoseconds());
 
 		model.accept(frame(200, scope("first", 20, 80)));
-		assertEquals(150, model.snapshot().totalNanoseconds());
-		assertEquals(15, model.snapshot().roots().getFirst().startNanoseconds());
+		assertEquals(150, model.snapshot().frameNanoseconds());
+		assertEquals(60, model.snapshot().shaderNanoseconds());
+		assertEquals(0, model.snapshot().roots().getFirst().startNanoseconds());
 		assertEquals(60, model.snapshot().roots().getFirst().durationNanoseconds());
 
 		FlameGraphModel capped = new FlameGraphModel();
-		for (int frame = 0; frame < 64; frame++) capped.accept(frame(64));
-		capped.accept(frame(128));
-		assertEquals(65, capped.snapshot().totalNanoseconds());
+		for (int frame = 0; frame < 64; frame++) capped.accept(frame(1_000, scope("first", 0, 64)));
+		capped.accept(frame(1_000, scope("first", 0, 128)));
+		assertEquals(65, capped.snapshot().shaderNanoseconds());
+	}
+
+	@Test
+	void compactsTopLevelLabelsAndKeepsChildrenRelativeToTheirPass() {
+		FlameGraphModel model = new FlameGraphModel();
+		GpuScopeTiming child = new GpuScopeTiming("child", 1_120, 20, List.of());
+		model.accept(frame(10_000,
+			new GpuScopeTiming("first", 1_000, 100, List.of(child)),
+			scope("second", 9_000, 200)));
+
+		assertEquals(300, model.snapshot().shaderNanoseconds());
+		assertEquals(0, model.snapshot().roots().get(0).startNanoseconds());
+		assertEquals(120, model.snapshot().roots().get(0).children().getFirst().startNanoseconds());
+		assertEquals(100, model.snapshot().roots().get(1).startNanoseconds());
 	}
 
 	@Test
@@ -34,7 +50,7 @@ class FlameGraphModelTest {
 		for (int index = 0; index < 20; index++) model.accept(frame(1_000));
 		assertTrue(model.snapshot().roots().isEmpty());
 		model.accept(frame(1_000, scope("transient", 30, 300)));
-		assertEquals(30, model.snapshot().roots().getFirst().startNanoseconds());
+		assertEquals(0, model.snapshot().roots().getFirst().startNanoseconds());
 		assertEquals(300, model.snapshot().roots().getFirst().durationNanoseconds());
 	}
 
@@ -60,6 +76,21 @@ class FlameGraphModelTest {
 			VibrisFlameGraph.layoutBounds(250, 250, 1_000, 1_000, 0, 1_000));
 		assertEquals(new VibrisFlameGraph.Bounds(300, 600),
 			VibrisFlameGraph.layoutBounds(100, 800, 1_000, 1_000, 300, 600));
+	}
+
+	@Test
+	void horizontalZoomKeepsTheMousePositionAnchored() {
+		VibrisFlameGraph.Viewport centered = VibrisFlameGraph.zoomViewport(0.0, 1.0, 0.5, 1.0);
+		assertEquals(0.1, centered.start(), 0.000_001);
+		assertEquals(0.8, centered.span(), 0.000_001);
+		assertEquals(new VibrisFlameGraph.Bounds(0, 500),
+			VibrisFlameGraph.layoutBounds(100, 400, 1_000, 1_000, 0, 1_000, centered.start(), centered.span()));
+
+		VibrisFlameGraph.Viewport leftEdge = VibrisFlameGraph.zoomViewport(0.0, 1.0, 0.0, 1.0);
+		assertEquals(0.0, leftEdge.start());
+		VibrisFlameGraph.Viewport reset = VibrisFlameGraph.zoomViewport(centered.start(), centered.span(), 0.5, -100.0);
+		assertEquals(0.0, reset.start());
+		assertEquals(1.0, reset.span());
 	}
 
 	private static String label(int width) {

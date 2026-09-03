@@ -19,6 +19,8 @@ public final class VibrisFlameGraph {
 	private boolean requestedVisible;
 	private boolean effectiveVisible;
 	private KeyMapping toggleKey;
+	private double viewStart;
+	private double viewSpan = 1.0;
 
 	public void setToggleKey(KeyMapping toggleKey) {
 		this.toggleKey = toggleKey;
@@ -30,6 +32,13 @@ public final class VibrisFlameGraph {
 
 	public void handleKeyPress(int action, KeyEvent event) {
 		if (action == 1 && toggleKey != null && toggleKey.matches(event)) requestedVisible = !requestedVisible;
+	}
+
+	public void handleScroll(double mouseX, double verticalScroll) {
+		if (!effectiveVisible || verticalScroll == 0.0 || !Double.isFinite(verticalScroll)) return;
+		Viewport viewport = zoomViewport(viewStart, viewSpan, mouseX, verticalScroll);
+		viewStart = viewport.start();
+		viewSpan = viewport.span();
 	}
 
 	public void beginFrame() {
@@ -50,7 +59,7 @@ public final class VibrisFlameGraph {
 		if (!effectiveVisible) return;
 		acceptCompleted();
 		FlameGraphModel.Snapshot snapshot = model.snapshot();
-		if (snapshot == null || snapshot.totalNanoseconds() <= 0) return;
+		if (snapshot == null || snapshot.shaderNanoseconds() <= 0) return;
 		Minecraft minecraft = Minecraft.getInstance();
 		Window window = minecraft.getWindow();
 		float inverseScale = 1.0F / window.getGuiScale();
@@ -60,9 +69,11 @@ public final class VibrisFlameGraph {
 			int width = window.getWidth();
 			int height = window.getHeight();
 			drawBox(graphics, minecraft.font, 0, height - BOX_HEIGHT, width, height,
-				"GPU Frame", snapshot.totalNanoseconds(), "/GPU Frame", 0);
+				"GPU Frame", snapshot.frameNanoseconds(), "/GPU Frame", 0);
+			drawBox(graphics, minecraft.font, 0, height - ROW_STRIDE - BOX_HEIGHT, width, height - ROW_STRIDE,
+				"Iris Shader", snapshot.shaderNanoseconds(), "/GPU Frame/Iris Shader", 1);
 			for (FlameGraphModel.Node node : snapshot.roots()) {
-				drawNode(graphics, minecraft.font, node, snapshot.totalNanoseconds(), width, 0, width, height, 1);
+				drawNode(graphics, minecraft.font, node, snapshot.shaderNanoseconds(), width, 0, width, height, 2);
 			}
 		} finally {
 			graphics.pose().popMatrix();
@@ -71,6 +82,7 @@ public final class VibrisFlameGraph {
 
 	public void reset() {
 		model.clear();
+		resetViewport();
 		VibrisClient.shaderDebugControl().setRealtimeTimingEnabled(false);
 		effectiveVisible = false;
 	}
@@ -84,6 +96,7 @@ public final class VibrisFlameGraph {
 		if (next == effectiveVisible) return;
 		effectiveVisible = next;
 		model.clear();
+		resetViewport();
 		VibrisClient.shaderDebugControl().setRealtimeTimingEnabled(next);
 	}
 
@@ -93,7 +106,9 @@ public final class VibrisFlameGraph {
 		int framebufferHeight, int depth
 	) {
 		if (node.durationNanoseconds() <= 0) return;
-		Bounds bounds = layoutBounds(node.startNanoseconds(), node.durationNanoseconds(), total, framebufferWidth, parentLeft, parentRight);
+		Bounds bounds = layoutBounds(
+			node.startNanoseconds(), node.durationNanoseconds(), total, framebufferWidth, parentLeft, parentRight,
+			viewStart, viewSpan);
 		int left = bounds.left();
 		int right = bounds.right();
 		if (right <= left) return;
@@ -148,16 +163,37 @@ public final class VibrisFlameGraph {
 	}
 
 	static Bounds layoutBounds(long start, long duration, long total, int width, int parentLeft, int parentRight) {
+		return layoutBounds(start, duration, total, width, parentLeft, parentRight, 0.0, 1.0);
+	}
+
+	static Bounds layoutBounds(long start, long duration, long total, int width, int parentLeft, int parentRight,
+		double viewStart, double viewSpan) {
 		if (total <= 0 || duration <= 0) return new Bounds(parentLeft, parentLeft);
-		int left = clamp((int) Math.floor((double) start / total * width), parentLeft, parentRight);
-		int right = clamp((int) Math.ceil((double) (start + duration) / total * width), left, parentRight);
+		int left = clamp((int) Math.floor((((double) start / total) - viewStart) / viewSpan * width), parentLeft, parentRight);
+		int right = clamp((int) Math.ceil((((double) (start + duration) / total) - viewStart) / viewSpan * width), left, parentRight);
 		return new Bounds(left, right);
 	}
 
+	static Viewport zoomViewport(double start, double span, double mouseX, double scroll) {
+		double anchor = Math.max(0.0, Math.min(1.0, mouseX));
+		double nextSpan = Math.max(MIN_VIEW_SPAN, Math.min(1.0, span / Math.pow(ZOOM_STEP, scroll)));
+		double worldAnchor = start + anchor * span;
+		double nextStart = Math.max(0.0, Math.min(1.0 - nextSpan, worldAnchor - anchor * nextSpan));
+		return new Viewport(nextStart, nextSpan);
+	}
+
+	private void resetViewport() {
+		viewStart = 0.0;
+		viewSpan = 1.0;
+	}
+
 	record Bounds(int left, int right) {}
+	record Viewport(double start, double span) {}
 
 	private static final int BOX_HEIGHT = 11;
 	private static final int ROW_STRIDE = 12;
 	private static final int TEXT_PADDING = 2;
 	private static final int BORDER_COLOR = 0xE020160F;
+	private static final double ZOOM_STEP = 1.25;
+	private static final double MIN_VIEW_SPAN = 1.0 / 64.0;
 }

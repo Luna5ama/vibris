@@ -25,7 +25,7 @@ final class FlameGraphModel {
 	void accept(GpuFrameTiming frame) {
 		frameTotals.add(frame.getTotalNanoseconds());
 		Set<String> present = new HashSet<>();
-		List<RawNode> roots = collect(frame.getScopes(), "", present);
+		List<RawNode> roots = collect(frame.getScopes(), "", 0L, present);
 		states.entrySet().removeIf(entry -> {
 			if (present.contains(entry.getKey())) return false;
 			ScopeState state = entry.getValue();
@@ -33,14 +33,21 @@ final class FlameGraphModel {
 			state.duration.add(0L);
 			return ++state.absentFrames >= WINDOW;
 		});
-		snapshot = new Snapshot(frameTotals.average(), smooth(roots));
+		List<Node> smoothed = new ArrayList<>(roots.size());
+		long shaderTotal = 0L;
+		for (RawNode root : roots) {
+			Node node = smooth(root, shaderTotal);
+			smoothed.add(node);
+			shaderTotal = saturatedAdd(shaderTotal, node.durationNanoseconds());
+		}
+		snapshot = new Snapshot(frameTotals.average(), shaderTotal, List.copyOf(smoothed));
 	}
 
 	Snapshot snapshot() {
 		return snapshot;
 	}
 
-	private List<RawNode> collect(List<GpuScopeTiming> scopes, String parent, Set<String> present) {
+	private List<RawNode> collect(List<GpuScopeTiming> scopes, String parent, long parentStart, Set<String> present) {
 		Map<String, Integer> occurrences = new LinkedHashMap<>();
 		List<RawNode> result = new ArrayList<>(scopes.size());
 		for (GpuScopeTiming scope : scopes) {
@@ -49,18 +56,24 @@ final class FlameGraphModel {
 			present.add(key);
 			ScopeState state = states.computeIfAbsent(key, ignored -> new ScopeState());
 			state.absentFrames = 0;
-			state.start.add(scope.getStartNanoseconds());
+			state.start.add(parent.isEmpty() ? 0L : Math.max(0L, scope.getStartNanoseconds() - parentStart));
 			state.duration.add(scope.getDurationNanoseconds());
-			result.add(new RawNode(key, scope.getName(), collect(scope.getChildren(), key, present)));
+			result.add(new RawNode(key, scope.getName(),
+				collect(scope.getChildren(), key, scope.getStartNanoseconds(), present)));
 		}
 		return result;
 	}
 
-	private List<Node> smooth(List<RawNode> nodes) {
-		return nodes.stream().map(node -> {
-			ScopeState state = states.get(node.key);
-			return new Node(node.key, node.name, state.start.average(), state.duration.average(), smooth(node.children));
-		}).toList();
+	private Node smooth(RawNode node, long parentStart) {
+		ScopeState state = states.get(node.key);
+		long start = saturatedAdd(parentStart, state.start.average());
+		return new Node(node.key, node.name, start, state.duration.average(),
+			node.children.stream().map(child -> smooth(child, start)).toList());
+	}
+
+	private static long saturatedAdd(long left, long right) {
+		if (right > 0L && left > Long.MAX_VALUE - right) return Long.MAX_VALUE;
+		return left + right;
 	}
 
 	private static final class SampleSeries {
@@ -90,7 +103,7 @@ final class FlameGraphModel {
 
 	private record RawNode(String key, String name, List<RawNode> children) {}
 	record Node(String key, String name, long startNanoseconds, long durationNanoseconds, List<Node> children) {}
-	record Snapshot(long totalNanoseconds, List<Node> roots) {}
+	record Snapshot(long frameNanoseconds, long shaderNanoseconds, List<Node> roots) {}
 
 	private static final int WINDOW = 20;
 	private static final int MAX_EMA_FRAMES = 64;

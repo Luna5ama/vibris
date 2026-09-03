@@ -1,6 +1,8 @@
 package dev.vibris.mod.mixin.minecraft;
 
 import dev.vibris.mod.IrisVibrisLifecycle;
+import dev.vibris.mod.VibrisClient;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.MouseHandler;
 import net.minecraft.client.input.MouseButtonInfo;
 import org.spongepowered.asm.mixin.Mixin;
@@ -39,6 +41,11 @@ public class MixinMouseHandler_VibrisInputBlock {
 
 	@Inject(method = "onScroll", at = @At("HEAD"), cancellable = true)
 	private void iris$blockMouseScroll(long window, double horizontal, double vertical, CallbackInfo ci) {
+		MouseHandler handler = (MouseHandler) (Object) this;
+		if (!handler.isMouseGrabbed()) {
+			double width = Minecraft.getInstance().getWindow().getScreenWidth();
+			if (width > 0.0) VibrisClient.flameGraph().handleScroll(handler.xpos() / width, vertical);
+		}
 		if (iris$discardBlockedInput()) ci.cancel();
 	}
 
