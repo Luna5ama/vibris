@@ -306,19 +306,18 @@ class RuntimeLeaseStatusTest {
 
     private fun source(pending: Path): PreparedSourceRef {
         val uuid = UUID.randomUUID().toString()
-        val source = Files.createDirectory(pending.resolve(uuid))
-        val file = Files.writeString(source.resolve("main.glsl"), uuid)
-        return PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
+        return SourceTestArchive.source(
+            pending,
+            uuid,
+            uuid,
+            dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED,
+            "main",
+        ).toBuilder()
             .setRequestedRevision("workspace")
             .setResolvedRevision("a".repeat(40))
             .setOrigin(SourceOrigin.newBuilder().setWorkspace(
                 WorkspaceOrigin.newBuilder().setDisplayName("fixture").setWorktreeRoot(pending.toString()),
             ))
-            .setFileCount(1)
-            .setTotalBytes(Files.size(file))
             .build()
     }
 

@@ -1,6 +1,7 @@
 package dev.vibris.core
 
 import dev.vibris.protocol.v2.ErrorCode
+import dev.vibris.api.CancellationToken
 
 internal class SourceActivator(
     private val sources: SourceRegistry,
@@ -14,15 +15,20 @@ internal class SourceActivator(
 
     @Synchronized
     @Throws(Failure::class)
-    fun begin(next: SourceRegistry.Lease): Activation {
+    fun begin(next: SourceRegistry.Lease): Activation = begin(next, CancellationToken.none(), Long.MAX_VALUE)
+
+    @Synchronized
+    @Throws(Failure::class)
+    fun begin(next: SourceRegistry.Lease, cancellation: CancellationToken, deadline: Long): Activation {
         requireReady()
         val activation: SourceRegistry.Activation
         try {
+            sources.materialize(next, cancellation, deadline)
             activation = sources.beginActivation(next)
             link.switchTo(next) { requireOwned(next) }
         } catch (failure: SourceRegistry.Failure) {
             sources.failActivation(next)
-            throw Failure(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, failure.message, failure)
+            throw Failure(failure.code, failure.message, failure)
         } catch (failure: ShaderLink.Failure) {
             throw fail(next, ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, failure.message, failure.stable(), failure)
         }
@@ -33,7 +39,7 @@ internal class SourceActivator(
     @Throws(Failure::class)
     fun commit(activation: Activation) {
         try {
-            sources.requireOwned(activation.state.next)
+            sources.requireMaterializedOwned(activation.state.next)
             sources.commitActivation(activation.state)
         } catch (failure: SourceRegistry.Failure) {
             throw Failure(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, failure.message, failure)
@@ -108,12 +114,14 @@ internal class SourceActivator(
                 return
             }
             if (sources.isActive(source)) {
-                sources.requireOwned(source)
+                sources.requireMaterializedOwned(source)
                 return
             }
+            sources.materialize(source, CancellationToken.none(), Long.MAX_VALUE)
             val activation = sources.beginActivation(source)
             try {
                 link.switchTo(source) { requireOwned(source) }
+                sources.requireMaterializedOwned(source)
                 sources.commitActivation(activation)
             } catch (failure: ShaderLink.Failure) {
                 if (failure.stable()) {

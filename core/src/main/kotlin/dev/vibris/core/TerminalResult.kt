@@ -26,7 +26,7 @@ internal data class TerminalResult(
     }
 
     companion object {
-        private val V2 = ProtocolVersion.newBuilder().setMajor(2).setMinor(0).build()
+        private val V2 = ProtocolVersion.newBuilder().setMajor(3).setMinor(0).build()
 
         @JvmStatic
         fun completed(value: JobCompleted): TerminalResult = TerminalResult(value, null)

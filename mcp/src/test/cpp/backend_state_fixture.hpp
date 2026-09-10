@@ -48,7 +48,7 @@ public:
 
     grpc::Status GetServerInfo(
         grpc::ServerContext*, const proto::GetServerInfoRequest*, proto::GetServerInfoResponse* response) override {
-        response->mutable_protocol_version()->set_major(2);
+        response->mutable_protocol_version()->set_major(3);
         auto* server = response->mutable_server();
         server->set_server_version("2.0.0-test");
         server->set_pending_source_root(pending_root_.string());
@@ -62,7 +62,7 @@ public:
 
     grpc::Status ListPresets(
         grpc::ServerContext*, const proto::ListPresetsRequest*, proto::ListPresetsResponse* response) override {
-        response->mutable_protocol_version()->set_major(2);
+        response->mutable_protocol_version()->set_major(3);
         if (preset_catalog_ == PresetCatalogKind::benchmark_19) {
             add_benchmark_presets(*response);
         } else {
@@ -75,7 +75,7 @@ public:
 
     grpc::Status ListResources(
         grpc::ServerContext*, const proto::ListResourcesRequest*, proto::ListResourcesResponse* response) override {
-        response->mutable_protocol_version()->set_major(2);
+        response->mutable_protocol_version()->set_major(3);
         return grpc::Status::OK;
     }
 
@@ -83,14 +83,14 @@ public:
         proto::ValidateContextResponse* response) override {
         const std::lock_guard lock(mutex_);
         validated_.push_back(request->context());
-        response->mutable_protocol_version()->set_major(2);
+        response->mutable_protocol_version()->set_major(3);
         response->set_valid(true);
         return grpc::Status::OK;
     }
 
     grpc::Status GetStatus(
         grpc::ServerContext*, const proto::GetStatusRequest*, proto::GetStatusResponse* response) override {
-        response->mutable_protocol_version()->set_major(2);
+        response->mutable_protocol_version()->set_major(3);
         response->mutable_status()->set_state(proto::SERVER_STATE_AVAILABLE);
         response->mutable_status()->set_can_accept_job(true);
         response->mutable_status()->set_can_start_job(true);
@@ -117,7 +117,7 @@ public:
                 request.message_id()});
         }
         proto::ServerMessage hello;
-        hello.mutable_protocol_version()->set_major(2);
+        hello.mutable_protocol_version()->set_major(3);
         hello.set_workspace_id(request.workspace_id());
         hello.mutable_server_hello()->set_server_version("2.0.0-test");
         hello.mutable_server_hello()->mutable_status()->set_state(proto::SERVER_STATE_AVAILABLE);
@@ -135,7 +135,7 @@ public:
                     request.submit_job().job().context()});
             }
             proto::ServerMessage completed;
-            completed.mutable_protocol_version()->set_major(2);
+            completed.mutable_protocol_version()->set_major(3);
             completed.set_request_id(request.request_id());
             completed.set_workspace_id(request.workspace_id());
             auto* terminal = completed.mutable_job_completed();

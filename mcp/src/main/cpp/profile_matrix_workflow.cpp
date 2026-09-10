@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <numeric>
 #include <sstream>
@@ -28,6 +29,8 @@ namespace fs = std::filesystem;
 
 constexpr std::uintmax_t maximum_document_bytes = 64ULL * 1024ULL * 1024ULL;
 constexpr std::size_t maximum_steps = 4096;
+constexpr std::size_t maximum_inactive_jobs = 20;
+constexpr int durable_schema_version = 3;
 
 [[noreturn]] void checkpoint_error(std::string message, bool retryable = false) {
 	throw StateError("JOB_CHECKPOINT_ERROR", std::move(message), retryable);
@@ -47,6 +50,39 @@ bool reparse_point(const fs::path& path) {
 	return attributes != INVALID_FILE_ATTRIBUTES &&
 		(attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
+
+void ensure_directory(const fs::path& path);
+
+class WorkspaceJobsLock final {
+public:
+	explicit WorkspaceJobsLock(const fs::path& state_directory) {
+		ensure_directory(state_directory.parent_path());
+		const auto path = state_directory.parent_path() / "jobs.lock";
+		handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (handle_ == INVALID_HANDLE_VALUE) checkpoint_error("Unable to open the durable jobs lock.", true);
+		OVERLAPPED overlapped{};
+		if (!LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &overlapped)) {
+			CloseHandle(handle_);
+			handle_ = INVALID_HANDLE_VALUE;
+			checkpoint_error("Unable to acquire the durable jobs lock.", true);
+		}
+	}
+
+	~WorkspaceJobsLock() {
+		if (handle_ == INVALID_HANDLE_VALUE) return;
+		OVERLAPPED overlapped{};
+		UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped);
+		CloseHandle(handle_);
+	}
+
+	WorkspaceJobsLock(const WorkspaceJobsLock&) = delete;
+	WorkspaceJobsLock& operator=(const WorkspaceJobsLock&) = delete;
+
+private:
+	HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
 
 void refresh_artifact_expiry(Json& value) {
 	if (value.is_array()) {
@@ -161,6 +197,137 @@ std::string read_file(const fs::path& path, const bool allow_empty = false) {
 	return value;
 }
 
+bool inactive_state(std::string_view state) {
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "paused";
+}
+
+struct CleanupJob final {
+	std::string job_id;
+	std::string workflow_state;
+	std::int64_t updated_unix_ms;
+};
+
+void cleanup_warning(std::vector<std::string>& warnings, std::string message) {
+	std::cerr << "vibris: durable job cleanup warning: " << message << '\n';
+	warnings.push_back(std::move(message));
+}
+
+std::optional<CleanupJob> inspect_cleanup_job(
+	const fs::path& directory, std::string_view workspace_id) {
+	try {
+		std::error_code error;
+		const auto status = fs::symlink_status(directory, error);
+		if (error || !fs::is_directory(status) || fs::is_symlink(status) || reparse_point(directory)) {
+			return std::nullopt;
+		}
+		const auto job_id = directory.filename().string();
+		if (!detail::is_uuid(job_id)) return std::nullopt;
+		const auto request = Json::parse(read_file(directory / "request.json"));
+		const auto state = Json::parse(read_file(directory / "state.json"));
+		if (!request.is_object() || !state.is_object() ||
+			request.value("schema_version", 0) != durable_schema_version ||
+			state.value("schema_version", 0) != durable_schema_version ||
+			request.value("workspace_id", std::string{}) != workspace_id ||
+			state.value("workspace_id", std::string{}) != workspace_id ||
+			request.value("job_id", std::string{}) != job_id ||
+			state.value("job_id", std::string{}) != job_id ||
+			!state.contains("updated_unix_ms") || !state.at("updated_unix_ms").is_number_integer()) {
+			return std::nullopt;
+		}
+		const auto workflow_state = state.value("workflow_state", std::string{});
+		if (!inactive_state(workflow_state) && workflow_state != "queued" && workflow_state != "running") {
+			return std::nullopt;
+		}
+		return CleanupJob{job_id, workflow_state, state.at("updated_unix_ms").get<std::int64_t>()};
+	} catch (...) {
+		return std::nullopt;
+	}
+}
+
+bool ordinary_job_tree(const fs::path& root) {
+	std::error_code error;
+	const auto root_status = fs::symlink_status(root, error);
+	if (error || !fs::is_directory(root_status) || fs::is_symlink(root_status) || reparse_point(root)) return false;
+	fs::recursive_directory_iterator iterator(root, fs::directory_options::none, error);
+	const fs::recursive_directory_iterator end;
+	while (!error && iterator != end) {
+		const auto& path = iterator->path();
+		const auto status = iterator->symlink_status(error);
+		if (error || fs::is_symlink(status) || reparse_point(path) ||
+			(!fs::is_directory(status) && !fs::is_regular_file(status))) return false;
+		iterator.increment(error);
+	}
+	return !error;
+}
+
+bool remove_job_tree(const fs::path& root) {
+	std::error_code error;
+	std::vector<fs::path> entries;
+	for (fs::recursive_directory_iterator iterator(root, fs::directory_options::none, error), end;
+		!error && iterator != end; iterator.increment(error)) {
+		entries.push_back(iterator->path());
+	}
+	if (error) return false;
+	std::ranges::sort(entries, [](const fs::path& left, const fs::path& right) {
+		return std::distance(left.begin(), left.end()) > std::distance(right.begin(), right.end());
+	});
+	const auto request = root / "request.json";
+	const auto state = root / "state.json";
+	for (const auto& path : entries) {
+		if (path == request || path == state) continue;
+		if (!fs::remove(path, error) || error) return false;
+	}
+	if (!fs::remove(request, error) || error || !fs::remove(state, error) || error ||
+		!fs::remove(root, error) || error) return false;
+	return true;
+}
+
+std::vector<std::string> prune_inactive_jobs(
+	const fs::path& state_directory, std::string_view workspace_id) {
+	std::vector<std::string> warnings;
+	std::error_code error;
+	if (!fs::exists(state_directory, error)) return warnings;
+	if (error || !fs::is_directory(state_directory, error) || error || reparse_point(state_directory)) {
+		cleanup_warning(warnings, "The durable jobs directory is unavailable or unsafe; cleanup was skipped.");
+		return warnings;
+	}
+	std::vector<CleanupJob> inactive;
+	fs::directory_iterator iterator(state_directory, fs::directory_options::none, error);
+	const fs::directory_iterator end;
+	while (!error && iterator != end) {
+		const auto path = iterator->path();
+		std::error_code status_error;
+		const auto status = iterator->symlink_status(status_error);
+		if (!status_error && fs::is_directory(status)) {
+			if (auto job = inspect_cleanup_job(path, workspace_id)) {
+				if (inactive_state(job->workflow_state)) inactive.push_back(std::move(*job));
+			} else {
+				cleanup_warning(warnings, "Skipped unverifiable durable job directory " + path.filename().string() + ".");
+			}
+		}
+		iterator.increment(error);
+	}
+	if (error) cleanup_warning(warnings, "Could not enumerate every durable job; cleanup continued with verified jobs.");
+	std::ranges::sort(inactive, [](const CleanupJob& left, const CleanupJob& right) {
+		if (left.updated_unix_ms != right.updated_unix_ms) return left.updated_unix_ms > right.updated_unix_ms;
+		return left.job_id < right.job_id;
+	});
+	for (std::size_t index = maximum_inactive_jobs; index < inactive.size(); ++index) {
+		const auto& selected = inactive[index];
+		const auto path = state_directory / selected.job_id;
+		const auto current = inspect_cleanup_job(path, workspace_id);
+		if (!current || current->workflow_state != selected.workflow_state ||
+			current->updated_unix_ms != selected.updated_unix_ms || !ordinary_job_tree(path)) {
+			cleanup_warning(warnings, "Skipped changed or unsafe durable job " + selected.job_id + ".");
+			continue;
+		}
+		if (!remove_job_tree(path)) {
+			cleanup_warning(warnings, "Could not delete inactive durable job " + selected.job_id + ".");
+		}
+	}
+	return warnings;
+}
+
 std::string receipt_name(const std::size_t index) {
 	auto value = std::to_string(index);
 	value.insert(value.begin(), 8 - std::min<std::size_t>(8, value.size()), '0');
@@ -204,6 +371,8 @@ Json freeze_source(SourcePreparer& preparer, std::vector<PreparedSource>& snapsh
 		{"requested_revision", reference.requested_revision()},
 		{"resolved_revision", reference.resolved_revision()},
 		{"snapshot_sha256", reference.snapshot_sha256()},
+		{"archive_format", ::vibris::control::v2::SourceArchiveFormat_Name(reference.archive_format())},
+		{"compressed_bytes", reference.compressed_bytes()},
 		{"vcs_checkout_state", ::vibris::control::v2::VcsCheckoutState_Name(reference.vcs_checkout_state())},
 		{"branch", reference.branch()},
 		{"start_head", reference.start_head()},
@@ -218,7 +387,8 @@ Json freeze_arguments(const fs::path& workspace_root, const fs::path& state_dire
 	const auto snapshot_root = state_directory / job_id / "sources";
 	ensure_directory(snapshot_root);
 	SourcePreparer preparer(workspace_root, snapshot_root,
-		{.max_total_bytes = 512ULL * 1024ULL * 1024ULL, .max_files = 100'000});
+		{.max_total_bytes = 512ULL * 1024ULL * 1024ULL, .max_files = 100'000},
+		SourceDestinationLayout::archive_file);
 	std::vector<PreparedSource> snapshots;
 	auto freeze_field = [&](const char* name) {
 		if (arguments.contains(name)) arguments[name] = freeze_source(preparer, snapshots, arguments.at(name), job_id);
@@ -463,11 +633,11 @@ DurableJobWorkflow::Record DurableJobWorkflow::create_record(
 		throw StateError("INVALID_JOB", "A durable job must contain between 1 and 4096 steps.");
 	}
 	const auto created = unix_ms();
-	Json request{{"schema_version", 2}, {"workspace_id", workspace_id_}, {"job_id", job_id},
+	Json request{{"schema_version", durable_schema_version}, {"workspace_id", workspace_id_}, {"job_id", job_id},
 		{"kind", arguments.value("recipe", std::string(tool_name))}, {"tool_name", tool_name},
 		{"created_unix_ms", created}, {"config", stored_config(config)},
 		{"arguments", std::move(arguments)}, {"steps", std::move(steps)}};
-	Json state{{"schema_version", 2}, {"workspace_id", workspace_id_}, {"job_id", job_id},
+	Json state{{"schema_version", durable_schema_version}, {"workspace_id", workspace_id_}, {"job_id", job_id},
 		{"kind", request.at("kind")}, {"workflow_state", "queued"}, {"stage", "queued"},
 		{"next_step", 0}, {"completed_steps", 0}, {"total_steps", request.at("steps").size()},
 		{"current_step", nullptr}, {"current_request_id", nullptr}, {"current_request_accepted", false},
@@ -487,8 +657,9 @@ DurableJobWorkflow::Record DurableJobWorkflow::load(std::string_view job_id) con
 		auto request = Json::parse(read_file(root / "request.json"));
 		auto state = Json::parse(read_file(root / "state.json"));
 		if (!request.is_object() || !state.is_object()) invalid_job();
-		if (request.value("schema_version", 0) != 2 || state.value("schema_version", 0) != 2) {
-			throw StateError("UNSUPPORTED_VERSION", "Only durable job schema version 2 is supported.");
+		if (request.value("schema_version", 0) != durable_schema_version ||
+			state.value("schema_version", 0) != durable_schema_version) {
+			throw StateError("UNSUPPORTED_VERSION", "Only durable job schema version 3 is supported.");
 		}
 		if (request.value("workspace_id", std::string{}) != workspace_id_ ||
 			state.value("workspace_id", std::string{}) != workspace_id_ ||
@@ -626,7 +797,8 @@ bool DurableJobWorkflow::finalization_resume_safe(const Record& record) const {
 		if (fs::exists(state_directory_ / job_id / "result.json", result_error) || result_error) return false;
 		for (std::size_t index = 0; index < total; ++index) {
 			const auto receipt = load_receipt(job_id, index);
-			if (!receipt || !receipt->is_object() || receipt->value("schema_version", 0) != 2 ||
+			if (!receipt || !receipt->is_object() ||
+				receipt->value("schema_version", 0) != durable_schema_version ||
 				receipt->value("job_id", std::string{}) != job_id ||
 				receipt->value("step_index", total) != index ||
 				receipt->value("step_id", std::string{}) != steps.at(index).at("id").get<std::string>() ||
@@ -742,7 +914,7 @@ Json DurableJobWorkflow::snapshot(
 		(state.at("current_request_accepted").get<bool>() ||
 			(state.at("last_error").is_object() && state.at("last_error").value("retryable", false)));
 	const bool finalization_resume = workflow_state == "paused" && finalization_resume_safe(record);
-	Json result{{"schema_version", 2}, {"job_id", state.at("job_id")}, {"kind", state.at("kind")},
+	Json result{{"schema_version", durable_schema_version}, {"job_id", state.at("job_id")}, {"kind", state.at("kind")},
 		{"workflow_state", workflow_state}, {"stage", state.at("stage")},
 		{"resumable", retryable_pause || finalization_resume || workflow_state == "cancelled"},
 		{"cancelable", (workflow_state == "queued" || workflow_state == "running") &&
@@ -782,11 +954,19 @@ ToolOutcome DurableJobWorkflow::start(
 			"vibris_job operation=wait and never poll it with query or shell sleep.", true,
 			{{"job_id", active_job_id_}}};
 	}
-	auto record = create_record(tool_name, arguments, config);
-	const auto job_id = record.request.at("job_id").get<std::string>();
-	publish_request(record.request);
-	append_event(record.state, "created", "queued");
-	save_state(record.state);
+	std::string job_id;
+	{
+		WorkspaceJobsLock workspace_lock(state_directory_);
+		const auto cleanup_warnings = prune_inactive_jobs(state_directory_, workspace_id_);
+		auto record = create_record(tool_name, arguments, config);
+		job_id = record.request.at("job_id").get<std::string>();
+		publish_request(record.request);
+		append_event(record.state, "created", "queued");
+		for (const auto& warning : cleanup_warnings) {
+			append_event(record.state, "cleanup_warning", "queued", {{"message", warning}});
+		}
+		save_state(record.state);
+	}
 	return begin(job_id, arguments.value("execution", std::string("sync")) == "async");
 }
 
@@ -872,24 +1052,6 @@ ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 		return snapshot(record, cursor, false);
 	}
 	if (operation != "resume") invalid_job();
-	auto record = load(job_id);
-	const auto state = record.state.at("workflow_state").get<std::string>();
-	if (state == "completed") return snapshot(record, cursor, true);
-	if (state == "failed") {
-		return ToolFailure{"JOB_NOT_RESUMABLE", "The durable job has failed terminally.", false,
-			{{"job_id", job_id}, {"workflow_state", state}}};
-	}
-	if (state != "paused" && state != "cancelled") {
-		return ToolFailure{"JOB_NOT_RESUMABLE", "The durable job is not paused or cancelled.", false,
-			{{"job_id", job_id}, {"workflow_state", state}}};
-	}
-	const bool retryable = state == "cancelled" || record.state.at("current_request_accepted").get<bool>() ||
-		finalization_resume_safe(record) ||
-		(record.state.at("last_error").is_object() && record.state.at("last_error").value("retryable", false));
-	if (!retryable) {
-		return ToolFailure{"JOB_NOT_RESUMABLE", "The durable job has no safe retry or accepted request to resume.",
-			false, {{"job_id", job_id}, {"workflow_state", state}}};
-	}
 	{
 		std::scoped_lock lock(worker_mutex_);
 		if (worker_running_) return ToolFailure{"DURABLE_WORKFLOW_BUSY",
@@ -897,15 +1059,38 @@ ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 			"vibris_job operation=wait, or cancel it before resuming another workflow.", true,
 			{{"job_id", active_job_id_}}};
 	}
-	record.state["workflow_state"] = "queued";
-	record.state["stage"] = "queued";
-	record.state["cancel_requested"] = false;
-	record.state["last_error"] = nullptr;
-	record.state["restart_resubmissions"] = 0;
-	record.state["execution_mode"] = "async";
-	record.state["step_started_unix_ms"] = nullptr;
-	append_event(record.state, "resumed", "queued", record.state.at("current_step"));
-	save_state(record.state);
+	{
+		WorkspaceJobsLock workspace_lock(state_directory_);
+		auto record = load(job_id);
+		const auto state = record.state.at("workflow_state").get<std::string>();
+		if (state == "completed") return snapshot(record, cursor, true);
+		if (state == "failed") {
+			return ToolFailure{"JOB_NOT_RESUMABLE", "The durable job has failed terminally.", false,
+				{{"job_id", job_id}, {"workflow_state", state}}};
+		}
+		if (state != "paused" && state != "cancelled") {
+			return ToolFailure{"JOB_NOT_RESUMABLE", "The durable job is not paused or cancelled.", false,
+				{{"job_id", job_id}, {"workflow_state", state}}};
+		}
+		const bool retryable = state == "cancelled" || record.state.at("current_request_accepted").get<bool>() ||
+			finalization_resume_safe(record) ||
+			(record.state.at("last_error").is_object() &&
+				record.state.at("last_error").value("retryable", false));
+		if (!retryable) {
+			return ToolFailure{"JOB_NOT_RESUMABLE",
+				"The durable job has no safe retry or accepted request to resume.", false,
+				{{"job_id", job_id}, {"workflow_state", state}}};
+		}
+		record.state["workflow_state"] = "queued";
+		record.state["stage"] = "queued";
+		record.state["cancel_requested"] = false;
+		record.state["last_error"] = nullptr;
+		record.state["restart_resubmissions"] = 0;
+		record.state["execution_mode"] = "async";
+		record.state["step_started_unix_ms"] = nullptr;
+		append_event(record.state, "resumed", "queued", record.state.at("current_step"));
+		save_state(record.state);
+	}
 	return begin(job_id, true);
 }
 
@@ -1065,7 +1250,7 @@ void DurableJobWorkflow::execute(std::string job_id, const std::stop_token stop)
 					return;
 				}
 
-				Json receipt{{"schema_version", 2}, {"job_id", job_id}, {"step_index", index},
+				Json receipt{{"schema_version", durable_schema_version}, {"job_id", job_id}, {"step_index", index},
 					{"step_id", step.at("id")}, {"success", false},
 					{"result", child_result == nullptr ? Json(nullptr) : *child_result},
 					{"error", failure_json(failure)}, {"completed_unix_ms", unix_ms()}};
@@ -1093,7 +1278,7 @@ void DurableJobWorkflow::execute(std::string job_id, const std::stop_token stop)
 				finish_active(job_id);
 				return;
 			}
-			Json receipt{{"schema_version", 2}, {"job_id", job_id}, {"step_index", index},
+			Json receipt{{"schema_version", durable_schema_version}, {"job_id", job_id}, {"step_index", index},
 				{"step_id", step.at("id")}, {"success", true}, {"result", std::get<Json>(outcome)},
 				{"error", nullptr}, {"completed_unix_ms", unix_ms()}};
 			publish_receipt(job_id, index, receipt);

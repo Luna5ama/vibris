@@ -223,11 +223,11 @@ class VibrisBootstrapTest {
         try {
             var stub = VibrisControlGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
             GetServerInfoResponse info = stub.getServerInfo(GetServerInfoRequest.getDefaultInstance());
-            assertEquals(2, info.getProtocolVersion().getMajor());
+            assertEquals(3, info.getProtocolVersion().getMajor());
             assertEquals(ErrorCode.ERROR_CODE_SERVER_NOT_AVAILABLE,
                 info.getServer().getStatus().getLastError().getCode());
             GetStatusResponse response = stub.getStatus(GetStatusRequest.getDefaultInstance());
-            assertEquals(2, response.getProtocolVersion().getMajor());
+            assertEquals(3, response.getProtocolVersion().getMajor());
             assertFalse(response.getStatus().getCanStartJob());
             assertEquals(ErrorCode.ERROR_CODE_SERVER_NOT_AVAILABLE,
                 response.getStatus().getLastError().getCode());

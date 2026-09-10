@@ -1,8 +1,11 @@
 #include "profile_matrix_workflow.hpp"
+#include "config_document.hpp"
 #include "state_error.hpp"
 #include "workspace_source_fixture.hpp"
 
 #include <chrono>
+#include <array>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -350,7 +353,7 @@ void generic_plans_checkpoint_each_case() {
 	const auto request_path = workspace.worktree() / ".vibris" / "jobs" /
 		result.at("job_id").get<std::string>() / "request.json";
 	auto request = Json::parse(vibris::mcp::test::read_file(request_path));
-	request["schema_version"] = 2 - 1;
+	request["schema_version"] = 3 - 1;
 	vibris::mcp::test::write_file(request_path, request.dump(2));
 	bool rejected = false;
 	try {
@@ -358,7 +361,7 @@ void generic_plans_checkpoint_each_case() {
 	} catch (const vibris::mcp::StateError& error) {
 		rejected = error.code() == "UNSUPPORTED_VERSION";
 	}
-	require(rejected, "a non-v2 durable request was read instead of failing with UNSUPPORTED_VERSION");
+	require(rejected, "a non-v3 durable request was read instead of failing with UNSUPPORTED_VERSION");
 }
 
 void compile_matrix_checkpoints_and_aggregates_every_case() {
@@ -534,6 +537,96 @@ void server_restart_resubmits_current_step_once() {
 		"a lost child job was not resubmitted exactly once after server restart");
 }
 
+void creation_retains_twenty_inactive_jobs() {
+	WorkspaceFixture workspace;
+	const auto jobs = workspace.worktree() / ".vibris" / "jobs";
+	std::filesystem::create_directories(jobs);
+	std::vector<std::string> inactive;
+	for (std::size_t index = 0; index < 25; ++index) {
+		const auto job_id = vibris::mcp::detail::generate_uuid();
+		inactive.push_back(job_id);
+		const auto root = jobs / job_id;
+		std::filesystem::create_directory(root);
+		const auto state = std::array{"completed", "failed", "cancelled", "paused"}[index % 4];
+		vibris::mcp::test::write_file(root / "request.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}}.dump());
+		vibris::mcp::test::write_file(root / "state.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}, {"workflow_state", state},
+			{"updated_unix_ms", static_cast<std::int64_t>(1'000 + index)}}.dump());
+	}
+	std::vector<std::string> active;
+	for (const auto state : {"queued", "running"}) {
+		const auto job_id = vibris::mcp::detail::generate_uuid();
+		active.push_back(job_id);
+		const auto root = jobs / job_id;
+		std::filesystem::create_directory(root);
+		vibris::mcp::test::write_file(root / "request.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}}.dump());
+		vibris::mcp::test::write_file(root / "state.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}, {"workflow_state", state},
+			{"updated_unix_ms", 1}}.dump());
+	}
+	const auto corrupt = vibris::mcp::detail::generate_uuid();
+	std::filesystem::create_directory(jobs / corrupt);
+	vibris::mcp::test::write_file(jobs / corrupt / "state.json", "{}");
+
+	DurableJobWorkflow workflow(workspace.worktree(), std::string(workspace_id),
+		[](DurableJobStepExecution execution) -> ToolOutcome { return profile_success(execution); });
+	const auto created = std::get<Json>(workflow.start("vibris_run_recipe", matrix(1), config()));
+
+	for (std::size_t index = 0; index < 5; ++index) {
+		require(!std::filesystem::exists(jobs / inactive[index]), "An oldest inactive job was retained.");
+	}
+	for (std::size_t index = 5; index < inactive.size(); ++index) {
+		require(std::filesystem::is_directory(jobs / inactive[index]), "A newest inactive job was deleted.");
+	}
+	for (const auto& job_id : active) {
+		require(std::filesystem::is_directory(jobs / job_id), "A queued or running job was deleted.");
+	}
+	require(std::filesystem::is_directory(jobs / corrupt), "An unverifiable job directory was deleted.");
+	std::size_t warnings = 0;
+	for (const auto& event : created.at("events")) {
+		if (event.at("type") == "cleanup_warning") ++warnings;
+	}
+	require(warnings == 1, "Cleanup did not record exactly one warning for the corrupt job.");
+}
+
+void failed_cleanup_warns_and_retries_on_next_creation() {
+	WorkspaceFixture workspace;
+	const auto jobs = workspace.worktree() / ".vibris" / "jobs";
+	std::filesystem::create_directories(jobs);
+	std::string oldest;
+	for (std::size_t index = 0; index < 21; ++index) {
+		const auto job_id = vibris::mcp::detail::generate_uuid();
+		if (index == 0) oldest = job_id;
+		const auto root = jobs / job_id;
+		std::filesystem::create_directory(root);
+		vibris::mcp::test::write_file(root / "request.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}}.dump());
+		vibris::mcp::test::write_file(root / "state.json", Json{{"schema_version", 3},
+			{"workspace_id", workspace_id}, {"job_id", job_id}, {"workflow_state", "completed"},
+			{"updated_unix_ms", static_cast<std::int64_t>(1'000 + index)}}.dump());
+	}
+	const auto blocked_file = jobs / oldest / "blocked.bin";
+	vibris::mcp::test::write_file(blocked_file, "blocked");
+	const auto blocker = CreateFileW(blocked_file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	require(blocker != INVALID_HANDLE_VALUE, "Could not lock cleanup failure fixture.");
+	DurableJobWorkflow first(workspace.worktree(), std::string(workspace_id),
+		[](DurableJobStepExecution execution) -> ToolOutcome { return profile_success(execution); });
+	const auto warned = std::get<Json>(first.start("vibris_run_recipe", matrix(1), config()));
+	require(std::filesystem::is_directory(jobs / oldest), "Failed deletion did not retain the job for retry.");
+	require(std::ranges::any_of(warned.at("events"), [](const Json& event) {
+		return event.at("type") == "cleanup_warning";
+	}), "Failed deletion was not recorded in the new job event log.");
+	CloseHandle(blocker);
+
+	DurableJobWorkflow second(workspace.worktree(), std::string(workspace_id),
+		[](DurableJobStepExecution execution) -> ToolOutcome { return profile_success(execution); });
+	static_cast<void>(second.start("vibris_run_recipe", matrix(1), config()));
+	require(!std::filesystem::exists(jobs / oldest), "Next creation did not retry the failed deletion.");
+}
+
 } // namespace
 
 int main() {
@@ -550,6 +643,8 @@ int main() {
 		expired_artifacts_remain_in_durable_results();
 		blocking_wait_times_out_compactly_without_polling();
 		server_restart_resubmits_current_step_once();
+		creation_retains_twenty_inactive_jobs();
+		failed_cleanup_warns_and_retries_on_next_creation();
 		std::cout << "PASS DurableWorkflowCheckpointResume\n";
 		return 0;
 	} catch (const std::exception& error) {

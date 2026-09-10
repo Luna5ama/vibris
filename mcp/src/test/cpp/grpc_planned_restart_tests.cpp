@@ -26,14 +26,14 @@ public:
             return {grpc::StatusCode::INVALID_ARGUMENT, "CLIENT_HELLO_REQUIRED"};
         }
         proto::ServerMessage hello;
-        hello.mutable_protocol_version()->set_major(2);
+        hello.mutable_protocol_version()->set_major(3);
         hello.set_workspace_id(request.workspace_id());
         hello.mutable_server_hello()->set_server_version("planned-restart-fixture");
         hello.mutable_server_hello()->mutable_status()->set_state(proto::SERVER_STATE_AVAILABLE);
         if (!stream->Write(hello)) return {grpc::StatusCode::UNAVAILABLE, "hello write failed"};
 
         proto::ServerMessage notice;
-        notice.mutable_protocol_version()->set_major(2);
+        notice.mutable_protocol_version()->set_major(3);
         notice.set_workspace_id(request.workspace_id());
         notice.mutable_server_shutting_down()->set_reason("planned test restart");
         notice.mutable_server_shutting_down()->set_retry_after_ms(25);
@@ -49,7 +49,7 @@ public:
             changed_.wait(lock, [this] { return completed_; });
         }
         proto::ServerMessage replacement;
-        replacement.mutable_protocol_version()->set_major(2);
+        replacement.mutable_protocol_version()->set_major(3);
         replacement.set_workspace_id(request.workspace_id());
         replacement.mutable_server_hello()->set_server_version("replacement-fixture");
         replacement.mutable_server_hello()->mutable_status()->set_state(proto::SERVER_STATE_AVAILABLE);
@@ -57,7 +57,7 @@ public:
         while (stream->Read(&request)) {
             if (!request.has_ping()) continue;
             proto::ServerMessage pong;
-            pong.mutable_protocol_version()->set_major(2);
+            pong.mutable_protocol_version()->set_major(3);
             pong.set_message_id(request.message_id());
             pong.set_request_id(request.request_id());
             pong.set_workspace_id(request.workspace_id());
@@ -108,7 +108,7 @@ int run() {
     std::promise<bool> ping_completion;
     auto ping_result = ping_completion.get_future();
     proto::ClientMessage ping;
-    ping.mutable_protocol_version()->set_major(2);
+    ping.mutable_protocol_version()->set_major(3);
     ping.set_message_id("planned-restart-ping");
     ping.set_request_id("planned-restart-ping");
     ping.set_workspace_id("planned-restart-test");

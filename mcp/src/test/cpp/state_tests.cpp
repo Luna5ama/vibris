@@ -978,7 +978,7 @@ void resource_lists_are_empty() {
 
 void status_lease_transition_mapping() {
     proto::GetStatusResponse response;
-    response.mutable_protocol_version()->set_major(2);
+    response.mutable_protocol_version()->set_major(3);
     response.mutable_protocol_version()->set_minor(0);
     response.set_wait_satisfied(true);
     auto* status = response.mutable_status();

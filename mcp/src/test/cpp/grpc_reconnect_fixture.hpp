@@ -55,7 +55,7 @@ private:
         control::v2::ClientMessage request;
         while (stream->Read(&request)) {
             control::v2::ServerMessage response;
-            response.mutable_protocol_version()->set_major(2);
+            response.mutable_protocol_version()->set_major(3);
             response.mutable_protocol_version()->set_minor(0);
             response.set_message_id(request.message_id());
             response.set_request_id(request.request_id());
@@ -96,7 +96,7 @@ private:
                     return {grpc::StatusCode::UNAVAILABLE, "JobStateSnapshot write failed"};
                 }
                 control::v2::ServerMessage completed;
-                completed.mutable_protocol_version()->set_major(2);
+                completed.mutable_protocol_version()->set_major(3);
                 completed.set_request_id(id);
                 completed.set_workspace_id(request.workspace_id());
                 auto* terminal = completed.mutable_job_completed();

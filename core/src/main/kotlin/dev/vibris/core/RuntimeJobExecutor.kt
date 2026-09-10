@@ -214,7 +214,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         source: SourceRegistry.Lease,
         progress: Consumer<JobStage>,
         deadline: Long,
-    ): ReloadResult = reuseLoadedPipeline(job, source, null, progress)
+    ): ReloadResult = reuseLoadedPipeline(job, source, null, progress, deadline)
         ?: activateSource(job, source, null, progress, deadline)
 
     @Throws(Failure::class)
@@ -226,7 +226,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         deadline: Long,
     ): LoadResult {
         val settings = if (config.preserveCurrent) null else config.valuesMap
-        val reload = reuseLoadedPipeline(job, source, settings, progress) ?: if (activator.isActive(source)) {
+        val reload = reuseLoadedPipeline(job, source, settings, progress, deadline) ?: if (activator.isActive(source)) {
             reloadActiveSource(job, source, settings, progress, deadline)
         } else {
             activateSource(job, source, settings, progress, deadline)
@@ -245,7 +245,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         deadline: Long,
     ): CompileResult {
         val settings = if (config.preserveCurrent) null else config.valuesMap
-        reuseLoadedPipeline(job, source, settings, progress)?.let { reload ->
+        reuseLoadedPipeline(job, source, settings, progress, deadline)?.let { reload ->
             val catalog = await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline)
             val loadedAtUnixMs = activeShaderLoadedAtUnixMs.takeIf { it > 0 } ?: System.currentTimeMillis()
             observeCatalog(catalog, loadedAtUnixMs)
@@ -254,7 +254,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         val activation = if (activator.isActive(source)) null else try {
             progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
             probe.event(job.requestId, "ACTIVATING_SOURCE")
-            activator.begin(source)
+            activator.begin(source, job.cancellation.token(), deadline)
         } catch (failure: SourceActivator.Failure) {
             throw Failure(failure.code, failure.message)
         }
@@ -291,7 +291,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
         probe.event(job.requestId, "ACTIVATING_SOURCE")
         val activation = try {
-            activator.begin(source)
+            activator.begin(source, job.cancellation.token(), deadline)
         } catch (failure: SourceActivator.Failure) {
             throw Failure(failure.code, failure.message)
         }
@@ -369,6 +369,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         source: SourceRegistry.Lease,
         config: Map<String, String>?,
         progress: Consumer<JobStage>,
+        deadline: Long,
     ): ReloadResult? {
         if (!activator.ready()) return null
         val current = try {
@@ -384,7 +385,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
             probe.event(job.requestId, "ACTIVATING_SOURCE")
             val activation = try {
-                activator.begin(source)
+                activator.begin(source, job.cancellation.token(), deadline)
             } catch (failure: SourceActivator.Failure) {
                 throw Failure(failure.code, failure.message)
             }
@@ -460,7 +461,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
                 progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
                 probe.event(job.requestId, "ACTIVATING_SOURCE")
                 try {
-                    activator.begin(source)
+                    activator.begin(source, job.cancellation.token(), deadline)
                 } catch (failure: SourceActivator.Failure) {
                     throw Failure(failure.code, failure.message)
                 }

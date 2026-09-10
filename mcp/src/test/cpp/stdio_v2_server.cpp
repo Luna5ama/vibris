@@ -37,7 +37,7 @@ Options parse_options(const int argc, char** argv) {
 }
 
 void version(proto::ProtocolVersion& value) {
-    value.set_major(2);
+    value.set_major(3);
     value.set_minor(0);
 }
 
@@ -151,7 +151,7 @@ public:
 
 private:
     static bool supported(const proto::ProtocolVersion& value) {
-        return value.major() == 2;
+        return value.major() == 3;
     }
 
     static grpc::Status unsupported() {

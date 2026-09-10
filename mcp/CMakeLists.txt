@@ -116,6 +116,8 @@ add_library(vibris_mcp_core STATIC
     src/main/cpp/profile_matrix_workflow.cpp
     src/main/cpp/mcp_backend.cpp
     src/main/cpp/source_handler.cpp
+    src/main/cpp/source_archive.cpp
+    src/main/cpp/source_delivery.cpp
     src/main/cpp/prepared_source.cpp
     src/main/cpp/result_mapper.cpp
     src/main/cpp/scene_context_resolver.cpp
@@ -318,7 +320,7 @@ if(BUILD_TESTING)
 
     foreach(scenario
             WorkspaceSnapshotTrackedUntrackedIgnoredAndRetry
-            StagingPromotion
+            DirectFinalArchiveRelease
             MutationTwiceFails
             MissingPendingRootRejected
             CheckedFileSwapDoesNotReadReparseTarget
@@ -329,6 +331,7 @@ if(BUILD_TESTING)
             ProvenanceUntrackedChange
             ProvenanceDeletion
             DetachedWorkspaceRecordsEmptyBranchAndExactHead
+            CrossLanguageSourceHashVector
             SourceSoak)
         add_test(NAME ${scenario} COMMAND vibris-workspace-source-tests ${scenario})
     endforeach()

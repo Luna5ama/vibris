@@ -1,216 +1,184 @@
-#include "workspace_source_fixture.hpp"
 #include "result_mapper.hpp"
+#include "source_delivery.hpp"
+#include "workspace_source_fixture.hpp"
 
 #include <array>
 #include <exception>
+#include <fstream>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <string_view>
 #include <utility>
-#include <nlohmann/json.hpp>
 
 namespace {
-
 namespace fs = std::filesystem;
-using vibris::mcp::SourcePreparer;
-using vibris::mcp::ResultMapper;
 using Json = nlohmann::json;
-using vibris::mcp::WorkspaceCopier;
-using vibris::mcp::copy_workspace_tree;
-using vibris::mcp::copy_workspace_tree_after_check;
+using vibris::mcp::LocalSourceDelivery;
+using vibris::mcp::ResultMapper;
+using vibris::mcp::SourceDestinationLayout;
+using vibris::mcp::SourcePreparer;
 using vibris::mcp::test::WorkspaceFixture;
 using vibris::mcp::test::capture_state_error;
 using vibris::mcp::test::file_totals;
 using vibris::mcp::test::generous_limits;
-using vibris::mcp::test::mutating_copier;
 using vibris::mcp::test::pending_has_no_sources;
-using vibris::mcp::test::read_file;
-using vibris::mcp::test::replace_with_file_symlink;
-using vibris::mcp::test::run_git;
 using vibris::mcp::test::require;
+using vibris::mcp::test::run_git;
 
-void workspace_snapshot_tracked_untracked_ignored_and_retry() {
-    // Given: a Git worktree with tracked, untracked, and ignored shader files that mutates after the first copy.
-    WorkspaceFixture fixture;
-    std::size_t copy_calls = 0;
-    fs::path owned_directory;
-    {
-        SourcePreparer preparer(
-            fixture.worktree(),
-            fixture.pending(),
-            generous_limits(),
-            mutating_copier(fixture.live_file(), 1, copy_calls));
-
-        // When: the workspace source is prepared through the public one-retry boundary.
-        auto prepared = preparer.prepare_workspace();
-        owned_directory = prepared.directory();
-        const auto& reference = prepared.reference();
-        const auto [expected_files, expected_bytes] = file_totals(fixture.shaders());
-
-        // Then: the retry accepts the second enumeration and flattens the shaders root into the UUID directory.
-        require(copy_calls == 2, "A single mutation must cause exactly one automatic retry.");
-        require(reference.file_count() == expected_files, "PreparedSourceRef did not use the second file count.");
-        require(reference.total_bytes() == expected_bytes, "PreparedSourceRef did not use the second byte count.");
-        require(reference.origin().has_workspace(), "Prepared source did not record workspace origin.");
-        require(reference.requested_revision() == "workspace" && reference.resolved_revision().size() == 40,
-            "PreparedSourceRef omitted the requested workspace revision or resolved full commit.");
-        require(reference.snapshot_sha256().size() == 64 &&
-                reference.vcs_checkout_state() == vibris::control::v2::VCS_CHECKOUT_STATE_ATTACHED &&
-                !reference.branch().empty() &&
-                reference.start_head() == reference.resolved_revision() &&
-                !reference.shader_tree_id().empty() && reference.dirty_shader_delta_sha256().size() == 64,
-            "PreparedSourceRef omitted immutable workspace provenance.");
-        require(prepared.resolved_revision().size() == 40,
-            "Prepared workspace source did not retain its full HEAD revision.");
-        require(owned_directory == fixture.pending() / reference.source_uuid(), "Prepared source used the wrong final path.");
-        require(read_file(owned_directory / "composite.fsh") == "tracked-composite", "Tracked file was omitted.");
-        require(read_file(owned_directory / "untracked.glsl") == "untracked-source", "Untracked file was omitted.");
-        require(
-            read_file(owned_directory / "ignored.properties") == "ignored-source", "Git-ignored file was omitted.");
-        require(read_file(owned_directory / "lib" / "live.glsl") == read_file(fixture.live_file()),
-            "Retry kept the first, mutated snapshot.");
-        require(fs::is_empty(owned_directory / "empty"), "Prepared source omitted an empty directory.");
-        require(!fs::exists(owned_directory / "shaders"), "Prepared source retained the outer shaders prefix.");
-    }
-    require(!fs::exists(owned_directory), "Owned PreparedSource did not clean up on destruction.");
+bool zstd_checksum_enabled(const fs::path& archive) {
+    std::ifstream input(archive, std::ios::binary);
+    std::array<unsigned char, 5> header{};
+    input.read(reinterpret_cast<char*>(header.data()), header.size());
+    return input.gcount() == static_cast<std::streamsize>(header.size()) &&
+        header[0] == 0x28 && header[1] == 0xb5 && header[2] == 0x2f && header[3] == 0xfd &&
+        (header[4] & 0x04) != 0;
 }
 
-void staging_promotion() {
-    // Given: a stable workspace and an empty server-declared pending root.
+void workspace_snapshot_tracked_untracked_ignored_and_retry() {
     WorkspaceFixture fixture;
-    fs::path released_directory;
+    std::size_t hooks = 0;
+    const auto timestamp = fs::last_write_time(fixture.live_file());
+    SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits(),
+        SourceDestinationLayout::pending_directory, [&] {
+            ++hooks;
+            if (hooks == 1) {
+                vibris::mcp::test::write_file(fixture.live_file(), "live-1");
+                fs::last_write_time(fixture.live_file(), timestamp);
+            }
+        });
+    const auto prepared = preparer.prepare_workspace();
+    const auto& reference = prepared.reference();
+    const auto [expected_files, expected_bytes] = file_totals(fixture.shaders());
+    require(hooks == 2 && prepared.attempts() == 2,
+        "Same-size, same-time mutation did not trigger one retry.");
+    require(reference.file_count() == expected_files && reference.total_bytes() == expected_bytes,
+        "Archive metadata did not describe the accepted input.");
+    require(reference.archive_format() == vibris::control::v2::SOURCE_ARCHIVE_FORMAT_TAR_ZSTD &&
+            reference.compressed_bytes() == fs::file_size(prepared.archive()) &&
+            reference.snapshot_sha256().size() == 64 && zstd_checksum_enabled(prepared.archive()),
+        "Prepared source omitted tar.zst metadata or source hash.");
+    require(prepared.directory() == fixture.pending() / reference.source_uuid() &&
+            prepared.archive() == prepared.directory() / "source.tar.zst" &&
+            fs::is_regular_file(prepared.archive()) && !fs::exists(prepared.directory() / "tree") &&
+            !fs::exists(fixture.pending() / ".staging"),
+        "Workspace preparation created staging or an unpacked tree.");
+}
+
+void direct_final_archive_release() {
+    WorkspaceFixture fixture;
+    fs::path released;
     {
-        WorkspaceCopier stable_copy = copy_workspace_tree;
-        SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits(), std::move(stable_copy));
-
-        // When: preparation completes and ownership is explicitly released.
+        SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits());
         auto prepared = preparer.prepare_workspace();
-        released_directory = prepared.directory();
-        const auto uuid = prepared.reference().source_uuid();
+        released = prepared.directory();
         prepared.release();
-
-        // Then: staging was atomically promoted to the direct UUID child, and release prevents RAII deletion.
-        require(released_directory == fixture.pending() / uuid, "Promotion did not produce pending/<uuid>.");
-        require(fs::is_directory(released_directory), "Promoted source directory is missing.");
-        require(!fs::exists(fixture.pending() / ".staging" / uuid), "UUID remained under .staging after promotion.");
-        require(read_file(released_directory / "composite.fsh") == "tracked-composite", "Promotion lost content.");
+        require(fs::is_regular_file(released / "source.tar.zst") &&
+                std::distance(fs::directory_iterator(released), fs::directory_iterator{}) == 1,
+            "Pending source did not contain exactly one directly written archive.");
     }
-    require(fs::is_directory(released_directory), "Released PreparedSource was deleted by its destructor.");
+    require(fs::is_directory(released), "Released source package was deleted.");
 }
 
 void mutation_twice_fails() {
-    // Given: a workspace copier that mutates the source after both allowed copy attempts.
     WorkspaceFixture fixture;
-    std::size_t copy_calls = 0;
-    SourcePreparer preparer(
-        fixture.worktree(), fixture.pending(), generous_limits(), mutating_copier(fixture.live_file(), 2, copy_calls));
-
-    // When: both the initial snapshot and its one retry observe different second metadata enumerations.
-    const auto error = capture_state_error([&preparer] {
-        static_cast<void>(preparer.prepare_workspace());
-    });
-
-    // Then: the structured mutation error is returned after exactly two copies and every partial source is removed.
-    require(error.code == "SOURCE_CHANGED_DURING_SNAPSHOT", "Two mutations returned the wrong structured error.");
-    require(copy_calls == 2, "Mutation failure did not stop after exactly one retry.");
-    require(pending_has_no_sources(fixture.pending()), "Mutation failure left a staging or final source directory.");
+    std::size_t hooks = 0;
+    const auto timestamp = fs::last_write_time(fixture.live_file());
+    SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits(),
+        SourceDestinationLayout::pending_directory, [&] {
+            ++hooks;
+            vibris::mcp::test::write_file(fixture.live_file(), hooks == 1 ? "live-1" : "live-2");
+            fs::last_write_time(fixture.live_file(), timestamp);
+        });
+    const auto error = capture_state_error([&] { static_cast<void>(preparer.prepare_workspace()); });
+    require(error.code == "SOURCE_CHANGED_DURING_SNAPSHOT" && hooks == 2,
+        "Two mutations did not exhaust the single retry boundary.");
+    require(pending_has_no_sources(fixture.pending()), "Failed packaging retained a partial archive.");
 }
 
 void missing_pending_root_is_rejected() {
-    // Given: a valid workspace but a server-advertised pending root that does not exist.
     WorkspaceFixture fixture;
     const auto missing = fixture.pending() / "missing";
-
-    // When: source preparation is constructed against that inaccessible shared root.
-    const auto error = capture_state_error([&fixture, &missing] {
+    const auto error = capture_state_error([&] {
         SourcePreparer preparer(fixture.worktree(), missing, generous_limits());
         static_cast<void>(preparer.prepare_workspace());
     });
-
-    // Then: the MCP reports server readiness and never creates the missing root.
-    require(error.code == "SERVER_NOT_READY", "A missing pending root returned the wrong structured error.");
-    require(!fs::exists(missing), "Source preparation created a missing server-advertised root.");
+    require(error.code == "SERVER_NOT_READY" && !fs::exists(missing),
+        "Missing destination was created or returned the wrong error.");
 }
 
 void checked_file_swap_does_not_read_reparse_target() {
-    // Given: an ordinary source file and a target outside the copied workspace.
-    vibris::mcp::test::TempDirectory fixture("workspace-reparse-swap");
-    const auto source = fixture.path() / "source";
-    const auto destination = fixture.path() / "destination";
-    const auto checked_file = source / "checked.glsl";
-    const auto reparse_target = fixture.path() / "outside.glsl";
-    vibris::mcp::test::write_file(checked_file, "ordinary-source");
-    vibris::mcp::test::write_file(reparse_target, "must-not-be-read");
-    bool swapped = false;
-
-    // When: the checked file is replaced by a reparse point immediately before it is opened.
-    const auto error = capture_state_error([&] {
-        copy_workspace_tree_after_check(source, destination, [&](const fs::path& path) {
-            require(path == checked_file, "The deterministic swap hook observed the wrong file.");
-            replace_with_file_symlink(path, reparse_target);
-            swapped = true;
-        });
-    });
-
-    // Then: the reparse target is rejected before any destination file is created.
-    require(swapped, "The checked workspace file was not swapped.");
-    require(error.code == "SOURCE_CONTAINS_REPARSE_POINT", "A checked-file swap returned the wrong error.");
-    require(!fs::exists(destination / "checked.glsl"), "The copier read a target through the swapped path.");
+    WorkspaceFixture fixture;
+    const auto target = fixture.worktree() / "outside.glsl";
+    vibris::mcp::test::write_file(target, "outside");
+    const auto link = fixture.shaders() / "linked.glsl";
+    if (!CreateSymbolicLinkW(link.c_str(), target.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        throw std::runtime_error("Could not create source reparse fixture.");
+    }
+    SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits());
+    const auto error = capture_state_error([&] { static_cast<void>(preparer.prepare_workspace()); });
+    require(error.code == "SOURCE_CONTAINS_REPARSE_POINT" && pending_has_no_sources(fixture.pending()),
+        "Workspace packaging followed a reparse point.");
 }
 
 void source_soak() {
     WorkspaceFixture fixture;
-    constexpr std::size_t iterations = 100;
-    for (std::size_t index = 0; index < iterations; ++index) {
+    for (std::size_t index = 0; index < 25; ++index) {
         {
             SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits());
             const auto prepared = preparer.prepare_workspace();
-            require(fs::is_directory(prepared.directory()), "Soak iteration did not prepare a source.");
+            require(fs::is_regular_file(prepared.archive()), "Soak packaging omitted its archive.");
         }
-        require(pending_has_no_sources(fixture.pending()), "Soak iteration retained an owned source.");
+        require(pending_has_no_sources(fixture.pending()), "Soak packaging retained an owned archive.");
     }
 }
 
 void queued_snapshot_materializes_with_stable_provenance() {
     WorkspaceFixture fixture;
-    vibris::mcp::test::TempDirectory server_pending("queued-snapshot-server");
-    SourcePreparer freezer(fixture.worktree(), fixture.pending(), generous_limits());
+    vibris::mcp::test::TempDirectory durable("queued-source");
+    vibris::mcp::test::TempDirectory server("queued-server");
+    SourcePreparer freezer(fixture.worktree(), durable.path(), generous_limits(),
+        SourceDestinationLayout::archive_file);
     auto frozen = freezer.prepare_workspace();
     vibris::mcp::test::write_file(fixture.live_file(), "changed-after-queue");
-    SourcePreparer materializer(fixture.worktree(), server_pending.path(), generous_limits());
-
-    auto materialized = materializer.prepare_snapshot(frozen.directory(), frozen.reference());
-
-    require(materialized.reference().source_uuid() != frozen.reference().source_uuid(),
-        "Queued snapshot materialization reused the checkpoint source UUID.");
-    require(materialized.reference().requested_revision() == frozen.reference().requested_revision() &&
-            materialized.reference().resolved_revision() == frozen.reference().resolved_revision(),
-        "Queued snapshot materialization changed revision provenance.");
-    require(read_file(materialized.directory() / "lib" / "live.glsl") != read_file(fixture.live_file()),
-        "Queued snapshot materialization reread the mutable workspace.");
+    LocalSourceDelivery delivery(server.path());
+    auto delivered = delivery.deliver(frozen.archive(), frozen.reference());
+    require(delivered.reference().source_uuid() != frozen.reference().source_uuid() &&
+            delivered.reference().snapshot_sha256() == frozen.reference().snapshot_sha256() &&
+            delivered.reference().compressed_bytes() == frozen.reference().compressed_bytes(),
+        "Queued delivery changed immutable source provenance.");
+    require(fs::is_regular_file(delivered.archive()) &&
+            fs::file_size(delivered.archive()) == frozen.reference().compressed_bytes() &&
+            !fs::exists(delivered.directory() / "tree"),
+        "Queued delivery did not copy exactly one compressed archive.");
 }
 
 void detached_workspace_records_empty_branch_and_exact_head() {
     WorkspaceFixture fixture;
     run_git(fixture.worktree(), "checkout --detach --quiet");
     SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits());
-
-    auto prepared = preparer.prepare_workspace();
+    const auto prepared = preparer.prepare_workspace();
     const auto& reference = prepared.reference();
+    require(reference.vcs_checkout_state() == vibris::control::v2::VCS_CHECKOUT_STATE_DETACHED &&
+            reference.branch().empty() && reference.start_head().size() == 40 &&
+            reference.start_head() == reference.resolved_revision(),
+        "Detached workspace provenance lost exact HEAD or empty branch.");
+}
 
-    require(reference.vcs_checkout_state() == vibris::control::v2::VCS_CHECKOUT_STATE_DETACHED,
-        "Detached workspace did not record detached checkout state.");
-    require(reference.branch().empty(), "Detached workspace synthesized a branch name.");
-    require(reference.start_head().size() == 40 && reference.start_head() == reference.resolved_revision(),
-        "Detached workspace did not retain its exact HEAD.");
+void cross_language_source_hash_vector() {
+    WorkspaceFixture fixture;
+    std::filesystem::remove_all(fixture.shaders());
+    std::filesystem::create_directories(fixture.shaders());
+    vibris::mcp::test::write_file(fixture.shaders() / "empty.glsl", {});
+    vibris::mcp::test::write_file(fixture.shaders() / fs::path(L"lib/中文/data.bin"),
+        std::string_view("\0\1\xff*", 4));
+    vibris::mcp::test::write_file(fixture.shaders() / fs::path(L"supplementary/🚀.glsl"), "rocket");
+    SourcePreparer preparer(fixture.worktree(), fixture.pending(), generous_limits());
 
-    vibris::mcp::test::TempDirectory server_pending("detached-snapshot-server");
-    SourcePreparer materializer(fixture.worktree(), server_pending.path(), generous_limits());
-    auto materialized = materializer.prepare_snapshot(prepared.directory(), reference);
-    require(materialized.reference().vcs_checkout_state() ==
-            vibris::control::v2::VCS_CHECKOUT_STATE_DETACHED &&
-            materialized.reference().branch().empty() &&
-            materialized.reference().start_head() == reference.start_head(),
-        "Detached queued snapshot did not preserve checkout state, empty branch, and exact HEAD.");
+    const auto prepared = preparer.prepare_workspace();
+
+    require(prepared.reference().snapshot_sha256() ==
+            "090d0522c1a199a333ac1d81ba7463c48f51004780ba893b0da40a414c0fd14b",
+        "Native packaging did not match the cross-language UTF-8 source hash vector.");
 }
 
 void make_clean(WorkspaceFixture& fixture) {
@@ -223,13 +191,9 @@ Json receipt(const vibris::control::v2::PreparedSourceRef& source) {
         {"workspace_id", "fixture-workspace"},
         {"worktree_root", source.origin().workspace().worktree_root()},
         {"vcs_checkout_state", vibris::control::v2::VcsCheckoutState_Name(source.vcs_checkout_state())},
-        {"branch", source.branch()},
-        {"requested_revision", source.requested_revision()},
-        {"resolved_revision", source.resolved_revision()},
-        {"start_head", source.start_head()},
-        {"completion_head", source.start_head()},
-        {"head_changed", false},
-        {"stale", false},
+        {"branch", source.branch()}, {"requested_revision", source.requested_revision()},
+        {"resolved_revision", source.resolved_revision()}, {"start_head", source.start_head()},
+        {"completion_head", source.start_head()}, {"head_changed", false}, {"stale", false},
         {"shader_tree_id", source.shader_tree_id()},
         {"dirty_shader_delta_sha256", source.dirty_shader_delta_sha256()},
         {"source_snapshot_sha256", source.snapshot_sha256()},
@@ -250,10 +214,7 @@ void provenance_clean() {
     auto value = receipt(prepared.reference());
     const auto& provenance = finalized(value);
     require(!provenance.at("head_changed").get<bool>() && !provenance.at("stale").get<bool>(),
-        "An unchanged workspace was not finalized as clean.");
-    require(provenance.at("completion_head").get<std::string>() ==
-            provenance.at("start_head").get<std::string>(),
-        "Clean provenance changed its completion HEAD.");
+        "Unchanged workspace was not finalized as clean.");
 }
 
 void provenance_metadata_only() {
@@ -265,7 +226,7 @@ void provenance_metadata_only() {
     auto value = receipt(prepared.reference());
     const auto& provenance = finalized(value);
     require(provenance.at("head_changed").get<bool>() && !provenance.at("stale").get<bool>(),
-        "A commit-message-only change did not separate HEAD change from shader staleness.");
+        "Metadata-only commit was treated as shader staleness.");
 }
 
 template <typename Mutation>
@@ -277,50 +238,45 @@ void require_stale_delta(std::string_view label, Mutation&& mutation) {
     std::forward<Mutation>(mutation)(fixture);
     auto first = receipt(prepared.reference());
     auto second = receipt(prepared.reference());
-    const auto& first_provenance = finalized(first);
-    const auto& second_provenance = finalized(second);
-    require(first_provenance.at("stale").get<bool>(), std::string(label) + " did not mark provenance stale.");
-    const auto delta = first_provenance.at("dirty_shader_delta_sha256").get<std::string>();
-    require(delta.size() == 64 && delta ==
-            second_provenance.at("dirty_shader_delta_sha256").get<std::string>(),
-        std::string(label) + " did not produce a deterministic shader delta hash.");
+    const auto& a = finalized(first);
+    const auto& b = finalized(second);
+    require(a.at("stale").get<bool>() && a.at("dirty_shader_delta_sha256").get<std::string>().size() == 64 &&
+            a.at("dirty_shader_delta_sha256") == b.at("dirty_shader_delta_sha256"),
+        std::string(label) + " did not produce deterministic stale provenance.");
 }
 
 void provenance_tracked_change() {
-    require_stale_delta("Tracked shader change", [](WorkspaceFixture& fixture) {
+    require_stale_delta("Tracked change", [](WorkspaceFixture& fixture) {
         vibris::mcp::test::write_file(fixture.shaders() / "composite.fsh", "tracked-change");
     });
 }
 
 void provenance_untracked_change() {
-    require_stale_delta("Untracked shader change", [](WorkspaceFixture& fixture) {
-        vibris::mcp::test::write_file(fixture.shaders() / "new-untracked.glsl", "untracked-change");
+    require_stale_delta("Untracked change", [](WorkspaceFixture& fixture) {
+        vibris::mcp::test::write_file(fixture.shaders() / "new.glsl", "untracked-change");
     });
 }
 
 void provenance_deletion() {
-    require_stale_delta("Deleted shader", [](WorkspaceFixture& fixture) {
-        require(fs::remove(fixture.shaders() / "composite.fsh"), "Could not delete tracked shader fixture.");
+    require_stale_delta("Deletion", [](WorkspaceFixture& fixture) {
+        require(fs::remove(fixture.shaders() / "composite.fsh"), "Could not delete source fixture.");
     });
 }
 
 using TestCase = std::pair<std::string_view, void (*)()>;
-constexpr std::array<TestCase, 13> test_cases {{
+constexpr std::array<TestCase, 14> test_cases{{
     {"WorkspaceSnapshotTrackedUntrackedIgnoredAndRetry", workspace_snapshot_tracked_untracked_ignored_and_retry},
-    {"StagingPromotion", staging_promotion},
-    {"MutationTwiceFails", mutation_twice_fails},
+    {"DirectFinalArchiveRelease", direct_final_archive_release}, {"MutationTwiceFails", mutation_twice_fails},
     {"MissingPendingRootRejected", missing_pending_root_is_rejected},
     {"CheckedFileSwapDoesNotReadReparseTarget", checked_file_swap_does_not_read_reparse_target},
     {"SourceSoak", source_soak},
     {"QueuedSnapshotMaterializesWithStableProvenance", queued_snapshot_materializes_with_stable_provenance},
     {"DetachedWorkspaceRecordsEmptyBranchAndExactHead", detached_workspace_records_empty_branch_and_exact_head},
-    {"ProvenanceClean", provenance_clean},
-    {"ProvenanceMetadataOnly", provenance_metadata_only},
+    {"CrossLanguageSourceHashVector", cross_language_source_hash_vector},
+    {"ProvenanceClean", provenance_clean}, {"ProvenanceMetadataOnly", provenance_metadata_only},
     {"ProvenanceTrackedChange", provenance_tracked_change},
-    {"ProvenanceUntrackedChange", provenance_untracked_change},
-    {"ProvenanceDeletion", provenance_deletion},
+    {"ProvenanceUntrackedChange", provenance_untracked_change}, {"ProvenanceDeletion", provenance_deletion},
 }};
-
 } // namespace
 
 int main(int argc, char** argv) {

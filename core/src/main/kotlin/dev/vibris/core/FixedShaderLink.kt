@@ -61,7 +61,7 @@ internal class FixedShaderLink(
         requireOrdinaryRoots()
         verifyActiveLink()
         val target = source.directory.toAbsolutePath().normalize()
-        if (pendingRoot != target.parent) {
+        if (pendingRoot != target.parent?.parent || target.fileName.toString() != OwnedSourceTree.TREE_NAME) {
             throw ShaderLink.Failure("Shader source is outside the pending root.", true)
         }
         requireLinkOrMissing(activeLink)

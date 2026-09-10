@@ -11,6 +11,7 @@ glWrapper = "1.1.0"
 kmogus = "1.1-SNAPSHOT"
 
 commons-compress = "1.28.0"
+zstd-jni = "1.5.7-4"
 protobufPlugin = "0.10.0"
 grpcJava = "1.76.0"
 protobuf = "3.25.8"
@@ -42,6 +43,7 @@ glWrapper-lwjgl3 = { module = "dev.luna5ama:gl-wrapper-lwjgl-3", version.ref = "
 kmogus-core = { module = "dev.luna5ama:kmogus-core", version.ref = "kmogus" }
 
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
+zstd-jni = { module = "com.github.luben:zstd-jni", version.ref = "zstd-jni" }
 grpc-protobuf = { module = "io.grpc:grpc-protobuf", version.ref = "grpcJava" }
 grpc-stub = { module = "io.grpc:grpc-stub", version.ref = "grpcJava" }
 protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }

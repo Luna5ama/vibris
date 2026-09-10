@@ -6,7 +6,7 @@
 
 namespace vibris::mcp {
 
-inline constexpr std::uint32_t protocol_major = 2;
+inline constexpr std::uint32_t protocol_major = 3;
 inline constexpr std::uint32_t protocol_minor = 0;
 inline constexpr const char* unsupported_version_code = "UNSUPPORTED_VERSION";
 

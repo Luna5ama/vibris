@@ -6,7 +6,6 @@ import dev.vibris.protocol.v2.VcsCheckoutState;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -83,18 +82,10 @@ class SourceRegistrySecurityTest {
     void reparsePendingRootIsRejectedBeforeTraversal() throws Exception {
         Path outside = Files.createDirectory(temp.resolve("outside"));
         String uuid = UUID.randomUUID().toString();
-        Path source = Files.createDirectory(outside.resolve(uuid));
-        byte[] content = "outside".getBytes(StandardCharsets.UTF_8);
-        Files.write(source.resolve("main.glsl"), content);
+        PreparedSourceRef reference = SourceTestArchive.source(outside, uuid, "outside",
+            VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
         Path pending = Files.createSymbolicLink(temp.resolve("pending"), outside);
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
-        PreparedSourceRef reference = PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
-            .setFileCount(1)
-            .setTotalBytes(content.length)
-            .build();
 
         SourceRegistry.Failure failure = assertThrows(
             SourceRegistry.Failure.class, () -> registry.validate(List.of(reference)));
@@ -105,16 +96,8 @@ class SourceRegistrySecurityTest {
     void reservationRechecksExclusiveUuidOwnership() throws Exception {
         Path pending = Files.createDirectory(temp.resolve("pending-ordinary"));
         String uuid = UUID.randomUUID().toString();
-        Path source = Files.createDirectory(pending.resolve(uuid));
-        byte[] content = "ordinary".getBytes(StandardCharsets.UTF_8);
-        Files.write(source.resolve("main.glsl"), content);
-        PreparedSourceRef reference = PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
-            .setFileCount(1)
-            .setTotalBytes(content.length)
-            .build();
+        PreparedSourceRef reference = SourceTestArchive.source(pending, uuid, "ordinary",
+            VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
         List<SourceRegistry.Candidate> first = registry.validate(List.of(reference));
         List<SourceRegistry.Candidate> second = registry.validate(List.of(reference));
@@ -127,32 +110,30 @@ class SourceRegistrySecurityTest {
     }
 
     @Test
-    void reservationHashesTheExactTransferredContent() throws Exception {
+    void contentValidationIsDeferredUntilMaterialization() throws Exception {
         Path pending = Files.createDirectory(temp.resolve("pending-content-mutation"));
         PreparedSourceRef reference = source(pending);
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
         List<SourceRegistry.Candidate> candidates = registry.validate(List.of(reference));
-        Files.writeString(pending.resolve(reference.getSourceUuid()).resolve("main.glsl"), "x".repeat(36));
-
+        Path archive = pending.resolve(reference.getSourceUuid()).resolve(OwnedSourceTree.ARCHIVE_NAME);
+        byte[] corrupted = Files.readAllBytes(archive);
+        corrupted[corrupted.length / 2] ^= 0x55;
+        Files.write(archive, corrupted);
         SourceRegistry.Lease lease = registry.reserve(candidates).getFirst();
+        registry.accept(List.of(lease));
 
-        assertEquals(64, lease.snapshotSha256().length());
+        SourceRegistry.Failure failure = assertThrows(SourceRegistry.Failure.class, () ->
+            registry.materialize(lease, dev.vibris.api.CancellationToken.none(), Long.MAX_VALUE));
+        assertEquals(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, failure.code);
+        assertFalse(Files.exists(lease.directory()));
     }
 
     @Test
     void cleanupDoesNotFollowPendingRootReplacedAfterReservation() throws Exception {
         Path pending = Files.createDirectory(temp.resolve("pending-reserved"));
         String uuid = UUID.randomUUID().toString();
-        Path source = Files.createDirectory(pending.resolve(uuid));
-        byte[] content = "reserved".getBytes(StandardCharsets.UTF_8);
-        Files.write(source.resolve("main.glsl"), content);
-        PreparedSourceRef reference = PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
-            .setFileCount(1)
-            .setTotalBytes(content.length)
-            .build();
+        PreparedSourceRef reference = SourceTestArchive.source(pending, uuid, "reserved",
+            VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
         List<SourceRegistry.Lease> reservation = registry.reserve(registry.validate(List.of(reference)));
         registry.accept(reservation);
@@ -175,6 +156,7 @@ class SourceRegistrySecurityTest {
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
         SourceRegistry.Lease first = registry.reserve(registry.validate(List.of(source(pending)))).getFirst();
         registry.accept(List.of(first));
+        registry.materialize(first, dev.vibris.api.CancellationToken.none(), Long.MAX_VALUE);
         registry.commitActivation(registry.beginActivation(first));
 
         Files.delete(first.directory().resolve("main.glsl"));
@@ -186,6 +168,7 @@ class SourceRegistrySecurityTest {
 
         SourceRegistry.Lease second = registry.reserve(registry.validate(List.of(source(pending)))).getFirst();
         registry.accept(List.of(second));
+        registry.materialize(second, dev.vibris.api.CancellationToken.none(), Long.MAX_VALUE);
         registry.commitActivation(registry.beginActivation(second));
 
         assertEquals(second.uuid(), registry.activeUuid());
@@ -199,6 +182,7 @@ class SourceRegistrySecurityTest {
         SourceRegistry registry = new SourceRegistry(pending, new CoreProbe());
         SourceRegistry.Lease lease = registry.reserve(registry.validate(List.of(source(pending)))).getFirst();
         registry.accept(List.of(lease));
+        registry.materialize(lease, dev.vibris.api.CancellationToken.none(), Long.MAX_VALUE);
         registry.commitActivation(registry.beginActivation(lease));
         Files.writeString(lease.directory().resolve("main.glsl"), "x".repeat(36));
 
@@ -209,14 +193,7 @@ class SourceRegistrySecurityTest {
 
     private static PreparedSourceRef source(Path pending) throws Exception {
         String uuid = UUID.randomUUID().toString();
-        Path source = Files.createDirectory(pending.resolve(uuid));
-        Path file = Files.writeString(source.resolve("main.glsl"), uuid);
-        return PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
-            .setFileCount(1)
-            .setTotalBytes(Files.size(file))
-            .build();
+        return SourceTestArchive.source(pending, uuid, uuid,
+            VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
     }
 }

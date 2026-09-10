@@ -158,20 +158,14 @@ class ServerDescriptorTest {
 
     private static PreparedSourceRef source(Path pending) throws Exception {
         String uuid = UUID.randomUUID().toString();
-        Path source = Files.createDirectory(pending.resolve(uuid));
-        Path file = Files.writeString(source.resolve("main.glsl"), "fixture");
-        return PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
+        return SourceTestArchive.source(pending, uuid, "fixture",
+            dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main").toBuilder()
             .setRequestedRevision("workspace")
             .setResolvedRevision("a".repeat(40))
             .setOrigin(dev.vibris.protocol.v2.SourceOrigin.newBuilder()
                 .setWorkspace(dev.vibris.protocol.v2.WorkspaceOrigin.newBuilder()
                     .setDisplayName("fixture")
                     .setWorktreeRoot(pending.toString())))
-            .setFileCount(1)
-            .setTotalBytes(Files.size(file))
             .build();
     }
 

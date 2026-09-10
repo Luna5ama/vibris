@@ -69,6 +69,8 @@ dependencies {
     includeLibrary("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.8.1")
     includeLibrary("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     includeLibrary("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.8.1")
+    includeLibrary("org.apache.commons:commons-compress:1.28.0")
+    includeLibrary("com.github.luben:zstd-jni:1.5.7-4")
 }
 
 loom {

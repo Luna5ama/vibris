@@ -6,7 +6,7 @@
 namespace vibris::mcp {
 namespace {
 
-constexpr std::uint32_t protocol_major = 2;
+constexpr std::uint32_t protocol_major = 3;
 constexpr std::uint32_t protocol_minor = 0;
 
 bool is_request_event(const proto::ServerMessage& message) {

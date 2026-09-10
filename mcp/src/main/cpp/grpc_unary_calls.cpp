@@ -50,7 +50,7 @@ void GrpcClient::Impl::finish_unary(Call& call, const bool ok) noexcept {
 
 bool GrpcClient::Impl::get_server_info(GetServerInfoCompletion completion) {
     proto::GetServerInfoRequest request;
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::GetServerInfoRequest, proto::GetServerInfoResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,
@@ -60,7 +60,7 @@ bool GrpcClient::Impl::get_server_info(GetServerInfoCompletion completion) {
 }
 
 bool GrpcClient::Impl::list_presets(proto::ListPresetsRequest request, ListPresetsCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::ListPresetsRequest, proto::ListPresetsResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,
@@ -71,7 +71,7 @@ bool GrpcClient::Impl::list_presets(proto::ListPresetsRequest request, ListPrese
 
 bool GrpcClient::Impl::validate_context(proto::ValidateContextRequest request,
     ValidateContextCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::ValidateContextRequest, proto::ValidateContextResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,
@@ -81,7 +81,7 @@ bool GrpcClient::Impl::validate_context(proto::ValidateContextRequest request,
 }
 
 bool GrpcClient::Impl::get_status(proto::GetStatusRequest request, GetStatusCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::GetStatusRequest, proto::GetStatusResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,
@@ -92,7 +92,7 @@ bool GrpcClient::Impl::get_status(proto::GetStatusRequest request, GetStatusComp
 
 bool GrpcClient::Impl::request_restart(
     proto::RequestRestartRequest request, RequestRestartCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     request.set_workspace_id(options_.workspace_id);
     RequestRestartCompletion observe_restart = [this, completion = std::move(completion)](
                                                    const grpc::Status& status,
@@ -114,7 +114,7 @@ bool GrpcClient::Impl::request_restart(
 
 bool GrpcClient::Impl::manage_artifacts(
     proto::ManageArtifactsRequest request, ManageArtifactsCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::ManageArtifactsRequest, proto::ManageArtifactsResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,
@@ -125,7 +125,7 @@ bool GrpcClient::Impl::manage_artifacts(
 
 bool GrpcClient::Impl::list_resources(
     proto::ListResourcesRequest request, ListResourcesCompletion completion) {
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     return start_unary<proto::ListResourcesRequest, proto::ListResourcesResponse>(
         std::move(request), std::move(completion),
         [](proto::VibrisControl::Stub& stub, grpc::ClientContext& context,

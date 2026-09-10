@@ -302,15 +302,8 @@ class RuntimeJobExecutorDeterministicRestorationTest {
 
         Source source(String marker) throws Exception {
             String uuid = UUID.randomUUID().toString();
-            Path directory = Files.createDirectory(pending.resolve(uuid));
-            Path file = Files.writeString(directory.resolve("main.glsl"), marker);
-            PreparedSourceRef reference = PreparedSourceRef.newBuilder()
-                .setSourceUuid(uuid)
-                .setFileCount(1)
-                .setTotalBytes(Files.size(file))
-                .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-                .setBranch("main")
-                .build();
+            PreparedSourceRef reference = SourceTestArchive.source(pending, uuid, marker,
+                dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
             List<SourceRegistry.Lease> leases = registry.reserve(registry.validate(List.of(reference)));
             registry.accept(leases);
             return new Source(leases.getFirst());

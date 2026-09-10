@@ -1,9 +1,9 @@
 #pragma once
 
+#include "source_archive.hpp"
 #include "commit_extractor.hpp"
 #include "source_types.hpp"
 #include "vibris_control.pb.h"
-#include "workspace_copier.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -13,8 +13,6 @@
 
 namespace vibris::mcp {
 
-using WorkspaceCopier = std::function<void(std::filesystem::path, std::filesystem::path)>;
-
 struct WorkspaceProvenance final {
     control::v2::VcsCheckoutState vcs_checkout_state;
     std::string branch;
@@ -22,7 +20,6 @@ struct WorkspaceProvenance final {
     std::string shader_tree_id;
     std::string source_snapshot_sha256;
     std::string dirty_shader_delta_sha256;
-
     [[nodiscard]] bool operator==(const WorkspaceProvenance&) const = default;
 };
 
@@ -41,6 +38,7 @@ public:
 
     [[nodiscard]] const control::v2::PreparedSourceRef& reference() const noexcept;
     [[nodiscard]] const std::filesystem::path& directory() const noexcept;
+    [[nodiscard]] const std::filesystem::path& archive() const noexcept;
     [[nodiscard]] const ArchiveExtractionStats& archive_stats() const noexcept;
     [[nodiscard]] std::size_t attempts() const noexcept;
     [[nodiscard]] std::string_view requested_revision() const noexcept;
@@ -49,45 +47,39 @@ public:
 
 private:
     friend class SourcePreparer;
-
-    PreparedSource(
-        control::v2::PreparedSourceRef reference,
-        std::filesystem::path directory,
-        ArchiveExtractionStats archive_stats,
-        std::size_t attempts,
-        std::string requested_revision,
-        std::string resolved_revision);
-
+    friend class LocalSourceDelivery;
+    PreparedSource(control::v2::PreparedSourceRef reference, std::filesystem::path owned_path,
+        std::filesystem::path archive_path, std::size_t attempts,
+        std::string requested_revision, std::string resolved_revision,
+        ArchiveExtractionStats archive_stats = {});
     void cleanup() noexcept;
 
     control::v2::PreparedSourceRef reference_;
-    std::filesystem::path directory_;
+    std::filesystem::path owned_path_;
+    std::filesystem::path archive_path_;
     ArchiveExtractionStats archive_stats_{};
     std::size_t attempts_ = 0;
     std::string requested_revision_;
     std::string resolved_revision_;
-    bool owns_directory_ = false;
+    bool owns_path_ = false;
 };
+
+enum class SourceDestinationLayout { pending_directory, archive_file };
 
 class SourcePreparer final {
 public:
-    SourcePreparer(
-        std::filesystem::path workspace_root,
-        std::filesystem::path pending_root,
-        SourceLimits limits,
-        WorkspaceCopier workspace_copier = copy_workspace_tree);
-
+    SourcePreparer(std::filesystem::path workspace_root, std::filesystem::path destination_root,
+        SourceLimits limits, SourceDestinationLayout layout = SourceDestinationLayout::pending_directory,
+        std::function<void()> after_workspace_archive = {});
     [[nodiscard]] PreparedSource prepare_workspace() const;
     [[nodiscard]] PreparedSource prepare_commit(std::string_view revision) const;
-    [[nodiscard]] PreparedSource prepare_snapshot(
-        const std::filesystem::path& snapshot_root,
-        const control::v2::PreparedSourceRef& provenance) const;
 
 private:
     std::filesystem::path workspace_root_;
-    std::filesystem::path pending_root_;
+    std::filesystem::path destination_root_;
     SourceLimits limits_;
-    WorkspaceCopier workspace_copier_;
+    SourceDestinationLayout layout_;
+    std::function<void()> after_workspace_archive_;
 };
 
 } // namespace vibris::mcp

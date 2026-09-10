@@ -529,7 +529,7 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     const std::span<const proto::PreparedSourceRef> sources, std::string request_id) {
     if (request_id.empty() || config.workspace_id.empty()) throw std::invalid_argument("job identity is missing");
     proto::ClientMessage message;
-    message.mutable_protocol_version()->set_major(2);
+    message.mutable_protocol_version()->set_major(3);
     message.set_message_id("job-" + request_id);
     message.set_request_id(request_id);
     message.set_workspace_id(config.workspace_id);

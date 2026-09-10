@@ -292,7 +292,7 @@ class RuntimeJobExecutorCaptureTest {
         AtomicInteger pending = new AtomicInteger();
         fixture.runtime.afterPassOperation = (request, sink, cancellation) ->
             cancellationFuture(cancellation, pending, null);
-        CoreJob job = fixture.job(singleAfterPassAction(pass), 5);
+        CoreJob job = fixture.job(singleAfterPassAction(pass), 100);
 
         RuntimeJobExecutor.Failure failure = assertThrows(RuntimeJobExecutor.Failure.class,
             () -> fixture.executor.execute(job, ignored -> {}));
@@ -688,15 +688,8 @@ class RuntimeJobExecutorCaptureTest {
         private SourceRegistry.Lease source() {
             try {
                 String uuid = UUID.randomUUID().toString();
-                Path directory = Files.createDirectory(pending.resolve(uuid));
-                Path file = Files.writeString(directory.resolve("main.glsl"), "A");
-                PreparedSourceRef reference = PreparedSourceRef.newBuilder()
-                    .setSourceUuid(uuid)
-                    .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-                    .setBranch("main")
-                    .setFileCount(1)
-                    .setTotalBytes(Files.size(file))
-                    .build();
+                PreparedSourceRef reference = SourceTestArchive.source(pending, uuid, "A",
+                    dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
                 List<SourceRegistry.Lease> leases = registry.reserve(registry.validate(List.of(reference)));
                 registry.accept(leases);
                 return leases.getFirst();

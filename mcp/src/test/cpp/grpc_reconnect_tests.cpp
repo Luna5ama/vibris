@@ -125,7 +125,7 @@ private:
 
 ClientMessage make_ping(std::size_t index) {
     ClientMessage message;
-    message.mutable_protocol_version()->set_major(2);
+    message.mutable_protocol_version()->set_major(3);
     message.mutable_protocol_version()->set_minor(0);
     message.set_message_id("message-" + std::to_string(index));
     message.set_request_id("request-" + std::to_string(index));

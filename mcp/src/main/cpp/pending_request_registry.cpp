@@ -33,7 +33,7 @@ bool PendingRequestRegistry::add_resume(
     std::string request_id, std::string workspace_id, GrpcCompletion completion) {
     if (request_id.empty() || workspace_id.empty() || !completion) return false;
     proto::ClientMessage request;
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     request.mutable_protocol_version()->set_minor(0);
     request.set_message_id("resume-" + request_id);
     request.set_request_id(request_id);

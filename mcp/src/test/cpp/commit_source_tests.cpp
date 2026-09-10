@@ -18,7 +18,6 @@
 #include <utility>
 
 namespace fs = std::filesystem;
-using vibris::mcp::CommitExtractor;
 using vibris::mcp::GitRepository;
 using vibris::mcp::SourceEntry;
 using vibris::mcp::SourceEntryKind;
@@ -255,22 +254,23 @@ void commit_archive_streaming_50_mib() {
     fs::remove(repository_dir.path() / "shaders" / "payload.bin");
     write_text(repository_dir.path() / "shaders" / "marker.glsl", "working");
     commit_all(repository_dir.path(), "current-worktree");
-    const auto staging = extraction_dir.path() / "staging";
-    fs::create_directories(staging);
     const SourceLimits limits{.max_total_bytes = 51 * kMiB, .max_files = 8};
-    CommitExtractor extractor(SourcePathPolicy{}, limits);
+    SourcePreparer preparer(repository_dir.path(), extraction_dir.path(), limits);
 
-    // When: Git completes a bounded archive capture before extraction consumes it.
-    auto archive = repository.open_shader_archive(archived_sha, 52 * kMiB);
-    const auto stats = extractor.extract(std::move(archive), staging);
+    // When: Git tar input is converted directly into the final compressed archive.
+    auto prepared = preparer.prepare_commit(archived_sha);
+    const auto& stats = prepared.archive_stats();
 
-    // Then: extraction is bounded, prefix-free, tar-file-free, and leaves the worktree untouched.
-    require(fs::file_size(staging / "payload.bin") == 50 * kMiB, "The 50 MiB payload was not extracted.");
-    require(read_text(staging / "marker.glsl") == "archived", "The requested commit was not extracted.");
+    // Then: conversion is bounded, writes only tar.zst, and leaves the worktree untouched.
+    require(fs::is_regular_file(prepared.archive()) &&
+            prepared.reference().archive_format() == vibris::control::v2::SOURCE_ARCHIVE_FORMAT_TAR_ZSTD &&
+            prepared.reference().compressed_bytes() == fs::file_size(prepared.archive()),
+        "The commit source was not written as one final tar.zst archive.");
     require(stats.largest_read_bytes > 0 && stats.largest_read_bytes <= kMiB, "Archive reads exceeded 1 MiB.");
     require(stats.extracted_file_count == 2, "The archive extraction file count was not exposed.");
     require(stats.extracted_total_bytes == 50 * kMiB + 8, "The archive extraction byte count was not exposed.");
     require(!contains_tar(extraction_dir.path()), "Commit extraction created an intermediate tar file.");
+    require(!fs::exists(prepared.directory() / "tree"), "Commit preparation created an unpacked tree.");
     require(!fs::exists(repository_dir.path() / "shaders" / "payload.bin"), "Commit preparation changed the worktree.");
     require(read_text(repository_dir.path() / "shaders" / "marker.glsl") == "working",
         "Commit preparation checked out the requested revision.");
@@ -289,8 +289,9 @@ void distinct_uuid_without_dedup() {
     // When: identical commit content is prepared twice.
     auto first = preparer.prepare_commit("HEAD");
     auto second = preparer.prepare_commit("HEAD");
+    auto workspace = preparer.prepare_workspace();
 
-    // Then: each preparation owns an independent UUID directory without hash reuse or deduplication.
+    // Then: each preparation owns an independent UUID archive without hash reuse or deduplication.
     require(first.reference().source_uuid() != second.reference().source_uuid(),
         "Identical commits reused a source UUID.");
     require(first.reference().requested_revision() == "HEAD" &&
@@ -298,8 +299,13 @@ void distinct_uuid_without_dedup() {
             first.reference().resolved_revision() == first.reference().origin().commit().revision(),
         "Commit provenance omitted the requested revision or resolved full commit.");
     require(first.directory() != second.directory(), "Identical commits reused a source directory.");
-    require(fs::is_regular_file(first.directory() / "main.glsl"), "The first source was not retained.");
-    require(fs::is_regular_file(second.directory() / "main.glsl"), "The second source was not retained.");
+    require(first.reference().snapshot_sha256() == second.reference().snapshot_sha256() &&
+            first.reference().snapshot_sha256() == workspace.reference().snapshot_sha256(),
+        "Commit and workspace packaging disagreed on the source hash.");
+    require(fs::is_regular_file(first.archive()) && fs::is_regular_file(second.archive()),
+        "An identical commit did not retain both compressed archives.");
+    require(!fs::exists(first.directory() / "main.glsl") && !fs::exists(second.directory() / "main.glsl"),
+        "Commit preparation wrote a naked source tree.");
 }
 
 using TestCase = std::pair<std::string_view, void (*)()>;

@@ -2,19 +2,18 @@ package dev.vibris.core
 
 import dev.vibris.protocol.v2.ErrorCode
 import java.io.IOException
-import java.nio.ByteBuffer
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
-import java.security.MessageDigest
+import java.nio.file.attribute.FileTime
 
 internal class OwnedSourceTree(
     pendingRoot: Path,
-    private val maxBytes: Long = DEFAULT_MAX_BYTES,
-    private val maxFiles: Int = DEFAULT_MAX_FILES,
+    val maxBytes: Long = DEFAULT_MAX_BYTES,
+    val maxFiles: Int = DEFAULT_MAX_FILES,
 ) {
     private val pendingRoot = pendingRoot.toAbsolutePath().normalize()
     private var pendingRootIdentity: OwnedPathIdentity? = null
@@ -31,100 +30,50 @@ internal class OwnedSourceTree(
         if (pendingRoot != directory.parent) {
             throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE, "Source UUID escapes the pending root.")
         }
-        val stats = scan(directory)
-        return Inspection(directory, stats.files.toLong(), stats.bytes)
+        val archive = directory.resolve(ARCHIVE_NAME)
+        try {
+            val directoryAttributes = Files.readAttributes(directory, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            val archiveAttributes = Files.readAttributes(archive, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            requireOrdinaryDirectory(directory, directoryAttributes)
+            requireOrdinaryFile(archive, archiveAttributes)
+            return Inspection(directory, archive, archiveAttributes.size())
+        } catch (_: IOException) {
+            throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE, "Prepared source archive is missing or unsafe.")
+        }
     }
 
     @Synchronized
     @Throws(SourceRegistry.Failure::class)
-    fun reserve(directory: Path, fileCount: Long, totalBytes: Long): Reservation {
+    fun reserve(directory: Path, archive: Path, compressedBytes: Long): Reservation {
         requireSafePendingRoot()
-        val stats = scan(directory)
-        if (stats.files.toLong() != fileCount || stats.bytes != totalBytes) {
-            throw SourceRegistry.Failure(
-                ErrorCode.ERROR_CODE_INVALID_SOURCE,
-                "Source changed before ownership transfer.",
-            )
+        val inspection = inspect(directory.fileName.toString())
+        if (inspection.directory != directory || inspection.archive != archive ||
+            inspection.compressedBytes != compressedBytes
+        ) {
+            throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE,
+                "Source archive changed before ownership transfer.")
         }
         return try {
             Reservation(
                 Ownership(
                     checkNotNull(pendingRootIdentity),
                     OwnedPathIdentity.captureDirectory(directory),
+                    FileIdentity.capture(archive),
                 ),
-                sha256(stats, directory),
             )
         } catch (_: IOException) {
-            throw SourceRegistry.Failure(
-                ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
-                "Source changed before ownership transfer.",
-            )
+            throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
+                "Source archive changed before ownership transfer.")
         }
     }
 
-    fun stillOwned(directory: Path, ownership: Ownership): Boolean {
-        return ownership.rootIdentity.matchesDirectory(pendingRoot) &&
-            ownership.directoryIdentity.matchesDirectory(directory)
-    }
+    fun stillOwned(directory: Path, archive: Path, ownership: Ownership): Boolean =
+        ownership.rootIdentity.matchesDirectory(pendingRoot) &&
+            ownership.directoryIdentity.matchesDirectory(directory) && ownership.archiveIdentity.matches(archive)
 
+    @Synchronized
     @Throws(SourceRegistry.Failure::class)
-    fun matchesSnapshot(directory: Path, snapshotSha256: String): Boolean {
-        val stats = scan(directory)
-        return sha256(stats, directory) == snapshotSha256
-    }
-
-    @Throws(SourceRegistry.Failure::class)
-    private fun scan(directory: Path): FileStats {
-        if (!Files.isDirectory(directory, NOFOLLOW_LINKS) || Files.isSymbolicLink(directory)) {
-            throw SourceRegistry.Failure(
-                ErrorCode.ERROR_CODE_INVALID_SOURCE,
-                "Prepared source directory is missing.",
-            )
-        }
-        val stats = FileStats(maxBytes, maxFiles)
-        try {
-            Files.walkFileTree(
-                directory,
-                object : SimpleFileVisitor<Path>() {
-                    override fun preVisitDirectory(
-                        path: Path,
-                        attributes: BasicFileAttributes,
-                    ): FileVisitResult {
-                        requireOrdinary(path, attributes)
-                        return FileVisitResult.CONTINUE
-                    }
-
-                    override fun visitFile(path: Path, attributes: BasicFileAttributes): FileVisitResult {
-                        requireOrdinary(path, attributes)
-                        if (!attributes.isRegularFile) {
-                            throw IOException("non-ordinary source entry")
-                        }
-                        stats.add(path, attributes.size())
-                        return FileVisitResult.CONTINUE
-                    }
-                },
-            )
-        } catch (_: IOException) {
-            throw SourceRegistry.Failure(
-                ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
-                "Prepared source is not an ordinary tree.",
-            )
-        }
-        if (stats.files == 0) {
-            throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE, "Prepared source is empty.")
-        }
-        return stats
-    }
-
-    @Throws(SourceRegistry.Failure::class)
-    private fun sha256(stats: FileStats, directory: Path): String = try {
-        stats.sha256(directory)
-    } catch (_: IOException) {
-        throw SourceRegistry.Failure(
-            ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
-            "Prepared source changed while its snapshot hash was computed.",
-        )
-    }
+    fun requireSafeRoot() = requireSafePendingRoot()
 
     @Synchronized
     @Throws(SourceRegistry.Failure::class)
@@ -132,14 +81,10 @@ internal class OwnedSourceTree(
         var current: Path? = pendingRoot
         try {
             val identity = OwnedPathIdentity.captureDirectory(pendingRoot)
-            if (pendingRootIdentity == null) {
-                pendingRootIdentity = identity
-            }
+            if (pendingRootIdentity == null) pendingRootIdentity = identity
             if (!checkNotNull(pendingRootIdentity).matchesDirectory(pendingRoot)) {
-                throw SourceRegistry.Failure(
-                    ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
-                    "Pending source root identity changed.",
-                )
+                throw SourceRegistry.Failure(ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT,
+                    "Pending source root identity changed.")
             }
             while (current != null) {
                 OwnedPathIdentity.captureDirectory(current)
@@ -148,132 +93,84 @@ internal class OwnedSourceTree(
         } catch (_: IOException) {
             val code = if (Files.exists(pendingRoot, NOFOLLOW_LINKS)) {
                 ErrorCode.ERROR_CODE_SOURCE_CONTAINS_REPARSE_POINT
-            } else {
-                ErrorCode.ERROR_CODE_INVALID_SOURCE
-            }
+            } else ErrorCode.ERROR_CODE_INVALID_SOURCE
             throw SourceRegistry.Failure(code, "Pending source root is missing or unsafe.")
         }
     }
 
-    data class Inspection(
-        val directory: Path,
-        val fileCount: Long,
-        val totalBytes: Long,
-    ) {
-        fun directory(): Path = directory
-
-        fun fileCount(): Long = fileCount
-
-        fun totalBytes(): Long = totalBytes
-    }
-
-    data class Reservation(
-        val ownership: Ownership,
-        val snapshotSha256: String,
-    )
-
+    data class Inspection(val directory: Path, val archive: Path, val compressedBytes: Long)
+    data class Reservation(val ownership: Ownership)
     data class Ownership(
         val rootIdentity: OwnedPathIdentity,
         val directoryIdentity: OwnedPathIdentity,
-    ) {
-        fun rootIdentity(): OwnedPathIdentity = rootIdentity
+        val archiveIdentity: FileIdentity,
+    )
 
-        fun directoryIdentity(): OwnedPathIdentity = directoryIdentity
-    }
-
-    private class FileStats(private val maxBytes: Long, private val maxFiles: Int) {
-        var bytes = 0L
-        var files = 0
-        private val paths = ArrayList<Path>()
-
-        @Throws(IOException::class)
-        fun add(path: Path, size: Long) {
-            files++
-            if (files > maxFiles || size > maxBytes - bytes) {
-                throw IOException("source limit exceeded")
-            }
-            bytes += size
-            paths.add(path)
+    data class FileIdentity(val fileKey: Any?, val creationTime: FileTime, val size: Long) {
+        fun matches(path: Path): Boolean = try {
+            val current = capture(path)
+            val sameFile = if (fileKey != null || current.fileKey != null) {
+                fileKey != null && fileKey == current.fileKey
+            } else creationTime == current.creationTime
+            sameFile && size == current.size
+        } catch (_: IOException) {
+            false
         }
 
-        @Throws(IOException::class)
-        fun sha256(root: Path): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            val buffer = ByteArray(HASH_BUFFER_BYTES)
-            digest.update("vibris-source-tree-v1\u0000".toByteArray(Charsets.UTF_8))
-            paths.sortedBy { root.relativize(it).toString().replace('\\', '/') }.forEach { path ->
-                val relative = root.relativize(path).toString().replace('\\', '/').toByteArray(Charsets.UTF_8)
-                digest.update('F'.code.toByte())
-                digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(relative.size).array())
-                digest.update(relative)
-                val before = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-                requireOrdinary(path, before)
-                digest.update(ByteBuffer.allocate(Long.SIZE_BYTES).putLong(before.size()).array())
-                Files.newInputStream(path).use { input ->
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        digest.update(buffer, 0, count)
-                    }
-                }
-                val after = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-                requireOrdinary(path, after)
-                if (before.size() != after.size() || before.lastModifiedTime() != after.lastModifiedTime() ||
-                    before.fileKey() != after.fileKey()) {
-                    throw IOException("source changed while hashing")
-                }
+        companion object {
+            @Throws(IOException::class)
+            fun capture(path: Path): FileIdentity {
+                val attributes = Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+                requireOrdinaryFile(path, attributes)
+                return FileIdentity(attributes.fileKey(), attributes.creationTime(), attributes.size())
             }
-            return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
         }
     }
 
     companion object {
+        const val ARCHIVE_NAME = "source.tar.zst"
+        const val TREE_NAME = "tree"
         private const val DEFAULT_MAX_BYTES = 512L * 1024 * 1024
         private const val DEFAULT_MAX_FILES = 100_000
-        private const val HASH_BUFFER_BYTES = 1024 * 1024
 
         @JvmStatic
-        fun delete(root: Path): Boolean {
-            return try {
-                Files.walkFileTree(
-                    root,
-                    object : SimpleFileVisitor<Path>() {
-                        override fun preVisitDirectory(
-                            directory: Path,
-                            attributes: BasicFileAttributes,
-                        ): FileVisitResult {
-                            requireOrdinary(directory, attributes)
-                            return FileVisitResult.CONTINUE
-                        }
+        fun delete(root: Path): Boolean = try {
+            Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+                override fun preVisitDirectory(directory: Path, attributes: BasicFileAttributes): FileVisitResult {
+                    requireOrdinaryDirectory(directory, attributes)
+                    return FileVisitResult.CONTINUE
+                }
 
-                        override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
-                            requireOrdinary(file, attributes)
-                            if (!attributes.isRegularFile) {
-                                throw IOException("non-ordinary owned source entry")
-                            }
-                            Files.delete(file)
-                            return FileVisitResult.CONTINUE
-                        }
+                override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                    requireOrdinaryFile(file, attributes)
+                    Files.delete(file)
+                    return FileVisitResult.CONTINUE
+                }
 
-                        override fun postVisitDirectory(directory: Path, failure: IOException?): FileVisitResult {
-                            if (failure != null) {
-                                throw failure
-                            }
-                            Files.delete(directory)
-                            return FileVisitResult.CONTINUE
-                        }
-                    },
-                )
-                true
-            } catch (_: IOException) {
-                false
+                override fun postVisitDirectory(directory: Path, failure: IOException?): FileVisitResult {
+                    if (failure != null) throw failure
+                    Files.delete(directory)
+                    return FileVisitResult.CONTINUE
+                }
+            })
+            true
+        } catch (_: IOException) {
+            false
+        }
+
+        @Throws(IOException::class)
+        private fun requireOrdinaryDirectory(path: Path, attributes: BasicFileAttributes) {
+            if (!attributes.isDirectory || Files.isSymbolicLink(path) || attributes.isSymbolicLink || attributes.isOther) {
+                throw IOException("source directory is not ordinary")
             }
         }
 
         @Throws(IOException::class)
-        private fun requireOrdinary(path: Path, attributes: BasicFileAttributes) {
-            if (Files.isSymbolicLink(path) || attributes.isSymbolicLink || attributes.isOther) {
-                throw IOException("link-like source entry")
+        private fun requireOrdinaryFile(path: Path, attributes: BasicFileAttributes) {
+            if (!attributes.isRegularFile || Files.isSymbolicLink(path) ||
+                attributes.isSymbolicLink || attributes.isOther
+            ) {
+                throw IOException("source archive is not an ordinary file")
             }
         }
     }

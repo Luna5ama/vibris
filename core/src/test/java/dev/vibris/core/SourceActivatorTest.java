@@ -116,16 +116,8 @@ class SourceActivatorTest {
 
     private static SourceRegistry.Lease source(SourceRegistry registry, Path pending, String marker) throws Exception {
         String uuid = UUID.randomUUID().toString();
-        byte[] content = marker.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        Path directory = Files.createDirectory(pending.resolve(uuid));
-        Files.write(directory.resolve("main.glsl"), content);
-        var reference = dev.vibris.protocol.v2.PreparedSourceRef.newBuilder()
-            .setSourceUuid(uuid)
-            .setVcsCheckoutState(dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED)
-            .setBranch("main")
-            .setFileCount(1)
-            .setTotalBytes(content.length)
-            .build();
+        var reference = SourceTestArchive.source(pending, uuid, marker,
+            dev.vibris.protocol.v2.VcsCheckoutState.VCS_CHECKOUT_STATE_ATTACHED, "main");
         List<SourceRegistry.Lease> leases = registry.reserve(registry.validate(List.of(reference)));
         registry.accept(leases);
         return leases.getFirst();

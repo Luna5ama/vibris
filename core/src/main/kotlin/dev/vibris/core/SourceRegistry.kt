@@ -4,7 +4,11 @@ import dev.vibris.core.source.SourceRecord
 import dev.vibris.core.source.SourceState
 import dev.vibris.protocol.v2.ErrorCode
 import dev.vibris.protocol.v2.PreparedSourceRef
+import dev.vibris.protocol.v2.SourceArchiveFormat
 import dev.vibris.protocol.v2.VcsCheckoutState
+import dev.vibris.api.CancellationToken
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.util.ArrayList
 import java.util.HashMap
@@ -14,10 +18,11 @@ import java.util.UUID
 internal class SourceRegistry @JvmOverloads constructor(
     pendingRoot: Path,
     private val probe: CoreProbe,
-    maxSourceBytes: Long = ServerConfiguration.DEFAULT_MAX_SOURCE_BYTES,
-    maxSourceFiles: Int = ServerConfiguration.DEFAULT_MAX_SOURCE_FILES,
+    private val maxSourceBytes: Long = ServerConfiguration.DEFAULT_MAX_SOURCE_BYTES,
+    private val maxSourceFiles: Int = ServerConfiguration.DEFAULT_MAX_SOURCE_FILES,
 ) {
     private val trees = OwnedSourceTree(pendingRoot, maxSourceBytes, maxSourceFiles)
+    private val materializer = SourceMaterializer(trees)
     private val sources = HashMap<String, Lease>()
     private var activeSource: Lease? = null
 
@@ -37,22 +42,31 @@ internal class SourceRegistry @JvmOverloads constructor(
         val candidates = ArrayList<Candidate>(references.size)
         for (reference in references) {
             validateCheckout(reference)
+            if (reference.archiveFormat != SourceArchiveFormat.SOURCE_ARCHIVE_FORMAT_TAR_ZSTD ||
+                reference.compressedBytes <= 0 || reference.compressedBytes > maximumArchiveBytes() ||
+                reference.fileCount < 0 || reference.totalBytes < 0 || reference.totalBytes > maxSourceBytes ||
+                reference.fileCount > maxSourceFiles
+            ) {
+                throw Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE, "Prepared source archive metadata is invalid.")
+            }
             val uuid = requireUuid(reference.sourceUuid)
             if (!unique.add(uuid)) {
                 throw Failure(ErrorCode.ERROR_CODE_INVALID_SOURCE, "Source UUID is repeated.")
             }
             val inspection = trees.inspect(uuid)
-            if (inspection.fileCount != reference.fileCount || inspection.totalBytes != reference.totalBytes) {
+            if (inspection.compressedBytes != reference.compressedBytes) {
                 throw Failure(
                     ErrorCode.ERROR_CODE_INVALID_SOURCE,
-                    "Source metadata does not match its directory.",
+                    "Source archive size does not match its metadata.",
                 )
             }
             candidates.add(Candidate(
                 uuid,
                 inspection.directory,
+                inspection.archive,
                 reference.fileCount,
                 reference.totalBytes,
+                reference.compressedBytes,
                 reference,
             ))
         }
@@ -95,8 +109,8 @@ internal class SourceRegistry @JvmOverloads constructor(
             }
             reservations.add(trees.reserve(
                 candidate.directory,
-                candidate.fileCount,
-                candidate.totalBytes,
+                candidate.archive,
+                candidate.compressedBytes,
             ))
         }
         val reserved = ArrayList<Lease>(candidates.size)
@@ -105,10 +119,13 @@ internal class SourceRegistry @JvmOverloads constructor(
             val lease = Lease(
                 candidate.uuid,
                 candidate.directory,
+                candidate.archive,
+                candidate.directory.resolve(OwnedSourceTree.TREE_NAME),
                 reservations[index].ownership,
                 SourceRecord(candidate.uuid, 1),
-                reservations[index].snapshotSha256,
+                candidate.reference.snapshotSha256,
                 candidate.reference,
+                SourceMaterializer.State(),
             )
             sources[candidate.uuid] = lease
             reserved.add(lease)
@@ -142,6 +159,12 @@ internal class SourceRegistry @JvmOverloads constructor(
             Runnable { lease.record.beginActivation() },
         )
         return Activation(lease, activeSource)
+    }
+
+    @Throws(Failure::class)
+    fun materialize(lease: Lease, cancellation: CancellationToken, deadline: Long): Path {
+        requireOwned(lease)
+        return materializer.materialize(lease, cancellation, deadline)
     }
 
     @Synchronized
@@ -188,8 +211,21 @@ internal class SourceRegistry @JvmOverloads constructor(
     @Synchronized
     @Throws(Failure::class)
     fun requireOwned(lease: Lease) {
-        if (!sources.containsKey(lease.uuid) || !trees.stillOwned(lease.directory, lease.ownership)) {
+        if (!sources.containsKey(lease.uuid) ||
+            !trees.stillOwned(lease.ownedDirectory, lease.archive, lease.ownership)
+        ) {
             throw Failure(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, "Prepared source identity changed.")
+        }
+    }
+
+    @Synchronized
+    @Throws(Failure::class)
+    fun requireMaterializedOwned(lease: Lease) {
+        requireOwned(lease)
+        if (!lease.materialization.ready || !Files.isDirectory(lease.treeDirectory, NOFOLLOW_LINKS) ||
+            Files.isSymbolicLink(lease.treeDirectory) || !materializer.matchesMaterialized(lease)
+        ) {
+            throw Failure(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, "Prepared source content changed.")
         }
     }
 
@@ -197,10 +233,7 @@ internal class SourceRegistry @JvmOverloads constructor(
     @Throws(Failure::class)
     fun requireActiveOwned(): Lease? {
         val source = activeSource ?: return null
-        requireOwned(source)
-        if (!trees.matchesSnapshot(source.directory, source.snapshotSha256)) {
-            throw Failure(ErrorCode.ERROR_CODE_SOURCE_ACTIVATION_FAILED, "Prepared source content changed.")
-        }
+        requireMaterializedOwned(source)
         return source
     }
 
@@ -210,6 +243,11 @@ internal class SourceRegistry @JvmOverloads constructor(
     @Synchronized
     @Throws(Failure::class)
     fun activeSnapshot(): Lease? = requireActiveOwned()
+
+    private fun maximumArchiveBytes(): Long {
+        val overhead = maxSourceFiles.toLong() * 4096L + 1024L * 1024L
+        return if (maxSourceBytes > Long.MAX_VALUE - overhead) Long.MAX_VALUE else maxSourceBytes + overhead
+    }
 
     @Synchronized
     fun detachActive() {
@@ -258,7 +296,9 @@ internal class SourceRegistry @JvmOverloads constructor(
         if (!sources.containsKey(lease.uuid)) {
             return
         }
-        if (!trees.stillOwned(lease.directory, lease.ownership)) {
+        if (!trees.stillOwned(lease.ownedDirectory, lease.archive, lease.ownership) ||
+            lease.record.active() && (!lease.materialization.ready || !materializer.matchesMaterialized(lease))
+        ) {
             abandonUnsafe(lease)
             return
         }
@@ -315,7 +355,7 @@ internal class SourceRegistry @JvmOverloads constructor(
         var before = lease.record.state()
         lease.record.beginDeleting()
         record(lease, before, lease.record.state())
-        if (!OwnedSourceTree.delete(lease.directory)) {
+        if (!OwnedSourceTree.delete(lease.ownedDirectory)) {
             sources.remove(lease.uuid, lease)
             return
         }
@@ -342,32 +382,47 @@ internal class SourceRegistry @JvmOverloads constructor(
     data class Candidate(
         val uuid: String,
         val directory: Path,
+        val archive: Path,
         val fileCount: Long,
         val totalBytes: Long,
+        val compressedBytes: Long,
         val reference: PreparedSourceRef,
     ) {
         fun uuid(): String = uuid
 
         fun directory(): Path = directory
 
+        fun archive(): Path = archive
+
         fun fileCount(): Long = fileCount
 
         fun totalBytes(): Long = totalBytes
+
+        fun compressedBytes(): Long = compressedBytes
 
         fun reference(): PreparedSourceRef = reference
     }
 
     data class Lease(
         val uuid: String,
-        val directory: Path,
+        val ownedDirectory: Path,
+        val archive: Path,
+        val treeDirectory: Path,
         val ownership: OwnedSourceTree.Ownership,
         val record: SourceRecord,
         val snapshotSha256: String,
         val reference: PreparedSourceRef,
+        val materialization: SourceMaterializer.State,
     ) {
         fun uuid(): String = uuid
 
-        fun directory(): Path = directory
+        val directory: Path get() = treeDirectory
+
+        fun directory(): Path = treeDirectory
+
+        fun ownedDirectory(): Path = ownedDirectory
+
+        fun archive(): Path = archive
 
         fun ownership(): OwnedSourceTree.Ownership = ownership
 

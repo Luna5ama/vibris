@@ -366,6 +366,13 @@ message PreparedSourceRef {
     string shader_tree_id = 10;
     string dirty_shader_delta_sha256 = 11;
     VcsCheckoutState vcs_checkout_state = 12;
+    SourceArchiveFormat archive_format = 13;
+    uint64 compressed_bytes = 14;
+}
+
+enum SourceArchiveFormat {
+    SOURCE_ARCHIVE_FORMAT_UNSPECIFIED = 0;
+    SOURCE_ARCHIVE_FORMAT_TAR_ZSTD = 1;
 }
 
 message SourceOrigin {

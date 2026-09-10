@@ -17,7 +17,7 @@ import dev.vibris.protocol.v2.ServerMessage
 
 internal object ProtocolMessages {
     @JvmField
-    val V2: ProtocolVersion = ProtocolVersion.newBuilder().setMajor(2).setMinor(0).build()
+    val V2: ProtocolVersion = ProtocolVersion.newBuilder().setMajor(3).setMinor(0).build()
 
     @JvmStatic
     fun accepted(job: CoreJob, queuePosition: Int): ServerMessage =

@@ -67,7 +67,7 @@ void strict_v2_request_contains_typed_texture_and_buffer_actions() {
 	const std::vector sources{source()};
 	const auto request = JobProtocol::request(
 		"vibris_run_recipe", arguments, config(), scene(), sources, std::string(request_id));
-	require(request.protocol_version().major() == 2 && request.request_id() == request_id &&
+	require(request.protocol_version().major() == 3 && request.request_id() == request_id &&
 		request.workspace_id() == workspace_id && request.has_submit_job(),
 		"JobProtocol did not emit a strict v2 submit envelope");
 	const auto& job = request.submit_job().job();
@@ -480,7 +480,7 @@ void resume_registration_and_terminal_mapping_are_strict_v2() {
 		[&](const grpc::Status&, const proto::ServerMessage&) { called = true; }),
 		"explicit resume registration failed");
 	const auto requests = registry.requests();
-	require(requests.size() == 1 && requests.front().protocol_version().major() == 2 &&
+	require(requests.size() == 1 && requests.front().protocol_version().major() == 3 &&
 		requests.front().has_resume_job() && requests.front().resume_job().job_id() == request_id,
 		"explicit resume registration did not construct strict-v2 ResumeJob");
 	proto::ServerMessage failed;

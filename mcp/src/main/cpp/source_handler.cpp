@@ -1,6 +1,7 @@
 #include "source_handler.hpp"
 
 #include "config_document.hpp"
+#include "source_delivery.hpp"
 #include "state_error.hpp"
 
 #include <algorithm>
@@ -17,7 +18,8 @@ namespace {
 
 namespace control = ::vibris::control::v2;
 
-void prepare_one(SourcePreparer& preparer, const std::filesystem::path& workspace_root,
+void prepare_one(SourcePreparer& preparer, const SourceDelivery& delivery,
+    const std::filesystem::path& workspace_root,
     const Json* source, std::list<PreparedSource>& prepared) {
     const auto kind = source == nullptr ? std::string("workspace") : source->at("kind").get<std::string>();
     if (kind == "workspace") {
@@ -36,6 +38,14 @@ void prepare_one(SourcePreparer& preparer, const std::filesystem::path& workspac
         provenance.set_requested_revision(source->at("requested_revision").get<std::string>());
         provenance.set_resolved_revision(source->at("resolved_revision").get<std::string>());
         provenance.set_snapshot_sha256(source->at("snapshot_sha256").get<std::string>());
+        control::SourceArchiveFormat archive_format;
+        if (!control::SourceArchiveFormat_Parse(
+                source->at("archive_format").get<std::string>(), &archive_format) ||
+            archive_format != control::SOURCE_ARCHIVE_FORMAT_TAR_ZSTD) {
+            throw StateError("JOB_CHECKPOINT_ERROR", "Queued source archive format is invalid.", false);
+        }
+        provenance.set_archive_format(archive_format);
+        provenance.set_compressed_bytes(source->at("compressed_bytes").get<std::uint64_t>());
         control::VcsCheckoutState checkout_state;
         if (!control::VcsCheckoutState_Parse(
                 source->at("vcs_checkout_state").get<std::string>(), &checkout_state) ||
@@ -59,8 +69,8 @@ void prepare_one(SourcePreparer& preparer, const std::filesystem::path& workspac
             origin->set_worktree_root(source->at("worktree_root").get<std::string>());
         }
         const auto snapshot = workspace_root / ".vibris" / "jobs" /
-            job_id / "sources" / snapshot_uuid;
-        prepared.emplace_back(preparer.prepare_snapshot(snapshot, provenance));
+            job_id / "sources" / (snapshot_uuid + ".tar.zst");
+        prepared.emplace_back(delivery.deliver(snapshot, provenance));
         return;
     }
     prepared.emplace_back(preparer.prepare_commit(source->at("revision").get<std::string>()));
@@ -93,6 +103,7 @@ void SourceHandler::prepare(
     }
     SourcePreparer preparer(
         workspace_root_, std::filesystem::path(server.pending_source_root()), server_limits(server));
+    LocalSourceDelivery delivery(std::filesystem::path(server.pending_source_root()));
     std::list<PreparedSource> prepared;
     const auto recipe = arguments.value("recipe", std::string{});
     if (tool_name == "vibris_run_matrix" ||
@@ -100,24 +111,24 @@ void SourceHandler::prepare(
         (tool_name == "vibris_run_recipe" && recipe == "compile_validate" && arguments.contains("sources")) ||
         (tool_name == "vibris_run_actions" && arguments.contains("sources"))) {
         for (const auto& source : arguments.at("sources")) {
-            prepare_one(preparer, workspace_root_, &source, prepared);
+            prepare_one(preparer, delivery, workspace_root_, &source, prepared);
         }
         if (recipe == "compile_validate" && arguments.contains("baseline")) {
-            prepare_one(preparer, workspace_root_, &arguments.at("baseline"), prepared);
+            prepare_one(preparer, delivery, workspace_root_, &arguments.at("baseline"), prepared);
         }
     } else if (tool_name == "vibris_run_recipe" && recipe == "compile_validate") {
         const auto source = arguments.find("source");
-        prepare_one(preparer, workspace_root_, source == arguments.end() ? nullptr : &*source, prepared);
+        prepare_one(preparer, delivery, workspace_root_, source == arguments.end() ? nullptr : &*source, prepared);
         if (arguments.contains("baseline")) {
-            prepare_one(preparer, workspace_root_, &arguments.at("baseline"), prepared);
+            prepare_one(preparer, delivery, workspace_root_, &arguments.at("baseline"), prepared);
         }
     } else if (tool_name == "vibris_run_recipe" && recipe == "ab_compare") {
-        prepare_one(preparer, workspace_root_, &arguments.at("a").at("source"), prepared);
-        prepare_one(preparer, workspace_root_, &arguments.at("b").at("source"), prepared);
+        prepare_one(preparer, delivery, workspace_root_, &arguments.at("a").at("source"), prepared);
+        prepare_one(preparer, delivery, workspace_root_, &arguments.at("b").at("source"), prepared);
     } else {
         const auto source = arguments.find("source");
         if (tool_name != "vibris_run_actions" || source != arguments.end()) {
-            prepare_one(preparer, workspace_root_, source == arguments.end() ? nullptr : &*source, prepared);
+            prepare_one(preparer, delivery, workspace_root_, source == arguments.end() ? nullptr : &*source, prepared);
         }
     }
 

@@ -140,27 +140,12 @@ inline std::pair<std::uint64_t, std::uint64_t> file_totals(const fs::path& root)
     return {count, bytes};
 }
 
-inline WorkspaceCopier mutating_copier(const fs::path& live_file, std::size_t mutations, std::size_t& calls) {
-    return [live_file, mutations, &calls](const fs::path& source, const fs::path& staging) {
-        copy_workspace_tree(source, staging);
-        ++calls;
-        if (calls <= mutations) {
-            write_file(live_file, "live-" + std::string(calls * 8, 'x'));
-        }
-    };
-}
-
 inline SourceLimits generous_limits() {
     return {.max_total_bytes = 1024 * 1024, .max_files = 128};
 }
 
 inline bool pending_has_no_sources(const fs::path& pending) {
-    for (const auto& entry : fs::directory_iterator(pending)) {
-        if (entry.path().filename() != ".staging" || !entry.is_directory() || !fs::is_empty(entry.path())) {
-            return false;
-        }
-    }
-    return true;
+    return fs::is_empty(pending);
 }
 
 struct ErrorSnapshot final {

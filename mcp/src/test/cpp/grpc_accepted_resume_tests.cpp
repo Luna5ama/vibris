@@ -43,7 +43,7 @@ void accepted_request_resumes_after_disconnect() {
     });
     client.start();
     proto::ClientMessage request;
-    request.mutable_protocol_version()->set_major(2);
+    request.mutable_protocol_version()->set_major(3);
     request.set_message_id("message-job-resume");
     request.set_request_id("job-resume");
     request.set_workspace_id("accepted-resume-test");

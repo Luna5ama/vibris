@@ -21,7 +21,7 @@ void require(bool condition, std::string_view message) {
 
 proto::ClientMessage submit(std::string_view id) {
     proto::ClientMessage message;
-    message.mutable_protocol_version()->set_major(2);
+    message.mutable_protocol_version()->set_major(3);
     message.mutable_protocol_version()->set_minor(0);
     message.set_message_id("message-" + std::string(id));
     message.set_request_id(id);
