@@ -416,7 +416,8 @@ Json build_definitions() {
                    "action sequence synchronously or as a durable async job for the explicit Git worktree and scene "
                    "preset. An async result's next_action is one blocking vibris_job operation=wait call; never poll. "
                    "Put related multi-image exports into one ordered action sequence instead of waiting for "
-                   "an idle lease between images. restore_state defaults to true for both terminal outcomes; an "
+                   "an idle lease between images. restore_state defaults to preserve the final source/config on "
+                   "success and restore the previous state on error; an "
                    "explicit false/false load may establish the first verified Core-owned runtime snapshot.",
                    scoped(closed_object({{"sources", named_sources_schema()},
                                          {"configs", named_configs_schema()},

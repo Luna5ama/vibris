@@ -545,8 +545,11 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     job->mutable_context()->CopyFrom(context);
     job->mutable_context()->set_fov(config.fov);
     const auto restore = arguments.find("restore_state");
+    const auto recipe = arguments.value("recipe", std::string{});
+    const bool forced_restore = tool_name == "vibris_run_recipe" &&
+        (recipe == "profile_matrix" || recipe == "benchmark_ab" || recipe == "compile_validate");
     job->mutable_restore_state()->set_on_success(
-        restore == arguments.end() || restore->value("on_success", true));
+        forced_restore || (restore != arguments.end() && restore->value("on_success", false)));
     job->mutable_restore_state()->set_on_error(
         restore == arguments.end() || restore->value("on_error", true));
     configure_result_artifacts(arguments, *job->mutable_result_artifacts());

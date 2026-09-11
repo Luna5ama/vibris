@@ -72,7 +72,7 @@ void strict_v2_request_contains_typed_texture_and_buffer_actions() {
 		"JobProtocol did not emit a strict v2 submit envelope");
 	const auto& job = request.submit_job().job();
 	require(job.job_id() == request_id && job.has_action_sequence() &&
-		job.restore_state().on_success() && job.restore_state().on_error(),
+		!job.restore_state().on_success() && job.restore_state().on_error(),
 		"strict v2 job identity or restoration policy is missing");
 	require(job.action_sequence().actions(0).has_load_shader() &&
 		job.action_sequence().actions(0).prelude(),
@@ -89,6 +89,15 @@ void strict_v2_request_contains_typed_texture_and_buffer_actions() {
 		}
 	}
 	require(texture && buffer, "typed strict-v2 texture/buffer capture actions were not encoded");
+}
+
+void ordinary_actions_preserve_the_final_runtime_state_by_default() {
+	const Json arguments{{"actions", Json::array({{{"type", "reset_temporal_state"}}})}};
+	const auto request = JobProtocol::request(
+		"vibris_run_actions", arguments, config(), scene(), {}, std::string(request_id));
+	const auto& restore = request.submit_job().job().restore_state();
+	require(!restore.on_success() && restore.on_error(),
+		"ordinary jobs did not preserve the final runtime state by default");
 }
 
 void explicit_load_action_uses_declared_v2_ids() {
@@ -503,6 +512,7 @@ void resume_registration_and_terminal_mapping_are_strict_v2() {
 int main() {
 	try {
 		strict_v2_request_contains_typed_texture_and_buffer_actions();
+		ordinary_actions_preserve_the_final_runtime_state_by_default();
 		explicit_load_action_uses_declared_v2_ids();
 		missing_config_values_use_pack_defaults();
 		omitted_recipe_config_uses_pack_defaults();
