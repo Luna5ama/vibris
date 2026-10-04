@@ -26,7 +26,7 @@ neoForge {
 
 dependencies {
     compileOnly(project(":vibris-mod-common"))
-    compileOnly("net.irisshaders:common:1.10.6-vibris.1+mc1.21.11")
+    compileOnly("net.irisshaders:common:1.10.6-vibris.2+mc1.21.11")
 }
 
 tasks.withType<JavaCompile>().configureEach {

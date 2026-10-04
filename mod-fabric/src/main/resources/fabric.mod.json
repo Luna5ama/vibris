@@ -18,7 +18,7 @@
   "depends": {
     "fabricloader": ">=0.18.1",
     "minecraft": "=1.21.11",
-    "iris": "=1.10.6-vibris.1+mc1.21.11",
+    "iris": "=1.10.6-vibris.2+mc1.21.11",
     "sodium": "0.8.x"
   }
 }

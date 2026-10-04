@@ -4,7 +4,7 @@ plugins {
 }
 
 val minecraftVersion = "1.21.11"
-val irisVersion = "1.10.6-vibris.1+mc1.21.11"
+val irisVersion = "1.10.6-vibris.2+mc1.21.11"
 
 repositories {
     mavenLocal()
