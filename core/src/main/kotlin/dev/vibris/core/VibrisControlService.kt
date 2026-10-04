@@ -243,7 +243,7 @@ class VibrisControlService internal constructor(
         request: ManageArtifactsRequest,
         observer: StreamObserver<ManageArtifactsResponse>,
     ) {
-        if (!request.hasProtocolVersion() || request.protocolVersion.major != 2) {
+        if (!request.hasProtocolVersion() || request.protocolVersion.major != ProtocolMessages.V2.major) {
             observer.onError(Status.FAILED_PRECONDITION.withDescription("UNSUPPORTED_VERSION").asRuntimeException())
             return
         }
@@ -294,7 +294,7 @@ class VibrisControlService internal constructor(
         request: RequestRestartRequest,
         observer: StreamObserver<RequestRestartResponse>,
     ) {
-        if (!request.hasProtocolVersion() || request.protocolVersion.major != 2) {
+        if (!request.hasProtocolVersion() || request.protocolVersion.major != ProtocolMessages.V2.major) {
             observer.onError(Status.FAILED_PRECONDITION.withDescription("UNSUPPORTED_VERSION").asRuntimeException())
             return
         }
@@ -358,7 +358,7 @@ class VibrisControlService internal constructor(
                     greet(message)
                     return
                 }
-                if (!message.hasProtocolVersion() || message.protocolVersion.major != 2) {
+                if (!message.hasProtocolVersion() || message.protocolVersion.major != ProtocolMessages.V2.major) {
                     fail(Status.FAILED_PRECONDITION.withDescription("UNSUPPORTED_VERSION"))
                     return
                 }
@@ -393,7 +393,7 @@ class VibrisControlService internal constructor(
                     fail(Status.INVALID_ARGUMENT.withDescription("CLIENT_HELLO_REQUIRED"))
                     return
                 }
-                if (!message.hasProtocolVersion() || message.protocolVersion.major != 2) {
+                if (!message.hasProtocolVersion() || message.protocolVersion.major != ProtocolMessages.V2.major) {
                     fail(Status.FAILED_PRECONDITION.withDescription("UNSUPPORTED_VERSION"))
                     return
                 }

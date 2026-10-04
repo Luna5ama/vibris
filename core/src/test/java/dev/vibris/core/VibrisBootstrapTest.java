@@ -13,7 +13,6 @@ import dev.vibris.protocol.v2.ListPresetsRequest;
 import dev.vibris.protocol.v2.ListPresetsResponse;
 import dev.vibris.protocol.v2.ListResourcesRequest;
 import dev.vibris.protocol.v2.ManageArtifactsRequest;
-import dev.vibris.protocol.v2.ProtocolVersion;
 import dev.vibris.protocol.v2.RequestRestartRequest;
 import dev.vibris.protocol.v2.RequestRestartResponse;
 import dev.vibris.protocol.v2.ServerMessage;
@@ -294,7 +293,7 @@ class VibrisBootstrapTest {
         service.control(restartObserver(notices, failure)).onNext(clientHello("restart-observer-b"));
         service.requestRestart(
             RequestRestartRequest.newBuilder()
-                .setProtocolVersion(ProtocolVersion.newBuilder().setMajor(2))
+                .setProtocolVersion(ProtocolMessages.V2)
                 .setWorkspaceId("restart-test-workspace")
                 .setReason("deploy test build")
                 .build(),
@@ -706,7 +705,7 @@ class VibrisBootstrapTest {
 
     private static ClientMessage clientHello(String workspaceId) {
         return ClientMessage.newBuilder()
-            .setProtocolVersion(ProtocolVersion.newBuilder().setMajor(2))
+            .setProtocolVersion(ProtocolMessages.V2)
             .setMessageId("hello-" + workspaceId)
             .setWorkspaceId(workspaceId)
             .setClientHello(ClientHello.newBuilder()

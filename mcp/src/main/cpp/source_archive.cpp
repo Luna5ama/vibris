@@ -239,6 +239,7 @@ WriteArchive open_writer(OutputFile& output) {
         archive_write_add_filter_zstd(writer.get()) != ARCHIVE_OK ||
         archive_write_set_filter_option(writer.get(), "zstd", "compression-level", "3") != ARCHIVE_OK ||
         archive_write_set_filter_option(writer.get(), "zstd", "threads", "1") != ARCHIVE_OK ||
+        archive_write_set_bytes_in_last_block(writer.get(), 1) != ARCHIVE_OK ||
         archive_write_open(writer.get(), &output, nullptr, write_output, close_output) != ARCHIVE_OK) {
         fail("Could not initialize tar.zst source output.");
     }
