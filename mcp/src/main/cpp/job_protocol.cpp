@@ -161,26 +161,61 @@ void append_action(const Json& input, const SourceMap& sources, const ConfigMap&
         value->set_artifact_name(std::string(artifact_prefix) + input.value("artifact_name", "screenshot"));
         value->set_format(artifact_format(input.value("format", "png")));
         value->set_after_frames(input.value("after_frames", std::uint32_t{0}));
-    } else if (type == "dump_texture") {
-        auto* value = action->mutable_dump_texture();
-        copy_texture_selector(input.at("resource"), *value->mutable_resource());
-        value->set_format(artifact_format(input.at("format").get<std::string>()));
-        value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
-    } else if (type == "dump_buffer") {
-        auto* value = action->mutable_dump_buffer();
-        value->mutable_resource()->set_logical_name(input.at("resource").at("logical_name").get<std::string>());
-        value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
-    } else if (type == "dump_texture_after_pass") {
+    } else if (type == "texture_stats" || type == "accumulate_texture") {
+        auto* stats = type == "texture_stats" ? action->mutable_texture_stats() : nullptr;
+        auto* accumulation = type == "accumulate_texture" ? action->mutable_accumulate_texture() : nullptr;
+        copy_texture_selector(input.at("resource"), *(stats ? stats->mutable_resource() : accumulation->mutable_resource()));
+        if (input.contains("pass_id")) {
+            const auto pass = input.at("pass_id").get<std::string>();
+            if (stats) stats->set_pass_id(pass); else accumulation->set_pass_id(pass);
+        }
+        if (input.contains("region")) {
+            auto* crop = stats ? stats->mutable_region() : accumulation->mutable_region();
+            const auto& region = input["region"];
+            crop->set_x(region.at("x").get<std::uint32_t>()); crop->set_y(region.at("y").get<std::uint32_t>());
+            crop->set_width(region.at("width").get<std::uint32_t>()); crop->set_height(region.at("height").get<std::uint32_t>());
+        }
+        if (accumulation) {
+            accumulation->set_frames(input.at("frames").get<std::uint32_t>());
+            accumulation->set_batches(input.value("batches", std::uint32_t{16}));
+            accumulation->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
+            for (const auto& weight : input.value("luma_weights", Json::array())) accumulation->add_luma_weights(weight.get<double>());
+            for (const auto& output : input.value("outputs", Json::array({"mean", "variance", "stderr"}))) accumulation->add_outputs(output.get<std::string>());
+        }
+    } else if (type == "dump_texture" && input.contains("pass_id")) {
         auto* value = action->mutable_dump_texture_after_pass();
         value->set_pass_id(input.at("pass_id").get<std::string>());
         copy_texture_selector(input.at("resource"), *value->mutable_resource());
+        if (input.contains("region")) {
+            const auto& region = input["region"];
+            value->mutable_region()->set_x(region.at("x").get<std::uint32_t>());
+            value->mutable_region()->set_y(region.at("y").get<std::uint32_t>());
+            value->mutable_region()->set_width(region.at("width").get<std::uint32_t>());
+            value->mutable_region()->set_height(region.at("height").get<std::uint32_t>());
+        }
         value->set_format(artifact_format(input.at("format").get<std::string>()));
         value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
-    } else if (type == "dump_buffer_after_pass") {
+    } else if (type == "dump_texture") {
+        auto* value = action->mutable_dump_texture();
+        copy_texture_selector(input.at("resource"), *value->mutable_resource());
+        if (input.contains("region")) {
+            const auto& region = input["region"];
+            value->mutable_region()->set_x(region.at("x").get<std::uint32_t>());
+            value->mutable_region()->set_y(region.at("y").get<std::uint32_t>());
+            value->mutable_region()->set_width(region.at("width").get<std::uint32_t>());
+            value->mutable_region()->set_height(region.at("height").get<std::uint32_t>());
+        }
+        value->set_format(artifact_format(input.at("format").get<std::string>()));
+        value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
+    } else if (type == "dump_buffer" && input.contains("pass_id")) {
         auto* value = action->mutable_dump_buffer_after_pass();
         value->set_pass_id(input.at("pass_id").get<std::string>());
         value->mutable_resource()->set_logical_name(
             input.at("resource").at("logical_name").get<std::string>());
+        value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
+    } else if (type == "dump_buffer") {
+        auto* value = action->mutable_dump_buffer();
+        value->mutable_resource()->set_logical_name(input.at("resource").at("logical_name").get<std::string>());
         value->set_artifact_name(std::string(artifact_prefix) + input.at("artifact_name").get<std::string>());
     } else if (type == "get_capture_status") {
         action->mutable_get_capture_status();
@@ -456,16 +491,6 @@ void build_recipe(const Json& arguments, const JobContext& config, const SourceM
             candidate_captures.push_back(
                 append_capture(*sequence, capture, "b-" + std::to_string(capture_index++)));
         }
-        for (std::size_t index = 0; index < baseline_captures.size(); ++index) {
-            auto* compare = sequence->add_actions()->mutable_compare_captures();
-            compare->set_baseline_action_index(baseline_captures[index]);
-            compare->set_candidate_action_index(candidate_captures[index]);
-            compare->set_baseline_label(arguments.at("a").at("label").get<std::string>());
-            compare->set_candidate_label(arguments.at("b").at("label").get<std::string>());
-            if (const auto thresholds = arguments.find("visual_thresholds"); thresholds != arguments.end()) {
-                copy_visual_thresholds(*thresholds, *compare->mutable_thresholds());
-            }
-        }
         return;
     }
     throw std::invalid_argument("unsupported recipe");
@@ -476,6 +501,7 @@ std::uint64_t rendered_frames(const proto::ActionSequence& sequence) {
     for (const auto& action : sequence.actions()) {
         if (action.has_wait_frames()) result += action.wait_frames().frame_count();
         else if (action.has_get_gpu_metrics()) result += action.get_gpu_metrics().frames();
+        else if (action.has_accumulate_texture()) result += action.accumulate_texture().frames();
         else if (action.has_take_screenshot()) result += action.take_screenshot().after_frames();
     }
     return result;
@@ -560,7 +586,10 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     if (tool_name == "vibris_run_actions") {
         append_actions(arguments.at("actions"), sources_by_id, configs_by_id, *job->mutable_action_sequence());
     } else if (tool_name == "vibris_run_matrix") {
-        build_matrix(arguments, sources_by_id, configs_by_id, arguments.at("actions"), *job->mutable_matrix());
+        proto::MatrixRequest matrix;
+        build_matrix(arguments, sources_by_id, configs_by_id, arguments.at("actions"), matrix);
+        if (matrix.cases_size() != 1) throw std::invalid_argument("matrix steps must contain exactly one case");
+        job->mutable_action_sequence()->CopyFrom(matrix.cases(0).actions());
     } else if (tool_name == "vibris_run_recipe") {
         build_recipe(arguments, config, sources_by_id, configs_by_id, *job);
     } else {

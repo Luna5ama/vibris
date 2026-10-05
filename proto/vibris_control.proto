@@ -108,6 +108,7 @@ message ListPresetsRequest {
 message ListPresetsResponse {
     ProtocolVersion protocol_version = 1;
     repeated ScenePreset presets = 2;
+    string vibris_version = 3;
 }
 
 message ScenePreset {
@@ -117,6 +118,7 @@ message ScenePreset {
     repeated string tags = 4;
     string preset_sha256 = 5;
     SceneContext context = 6;
+    string description = 7;
 }
 
 message ListResourcesRequest {
@@ -368,6 +370,7 @@ message PreparedSourceRef {
     VcsCheckoutState vcs_checkout_state = 12;
     SourceArchiveFormat archive_format = 13;
     uint64 compressed_bytes = 14;
+    string patch_sha256 = 15;
 }
 
 enum SourceArchiveFormat {
@@ -391,6 +394,7 @@ message CommitOrigin {
     string repository_id = 1;
     string revision = 2;
     string worktree_root = 3;
+    string patch_sha256 = 4;
 }
 
 message SceneContext {
@@ -546,7 +550,6 @@ message Action {
         WaitFrames wait_frames = 2;
         TakeScreenshot take_screenshot = 3;
         ActivateSource activate_source = 4;
-        CompareCaptures compare_captures = 5;
         GetCaptureStatus get_capture_status = 6;
         InspectShader inspect_shader = 9;
         GetGpuMetrics get_gpu_metrics = 10;
@@ -558,9 +561,11 @@ message Action {
         DumpTextureAfterPass dump_texture_after_pass = 16;
         DumpBufferAfterPass dump_buffer_after_pass = 17;
         NsightGpuTrace nsight_gpu_trace = 18;
+        TextureStats texture_stats = 19;
+        AccumulateTexture accumulate_texture = 20;
     }
-    reserved 7, 8;
-    reserved "capture_pass", "capture_multi";
+    reserved 5, 7, 8;
+    reserved "compare_captures", "capture_pass", "capture_multi";
     bool prelude = 30;
 }
 
@@ -570,7 +575,8 @@ enum ActionKind {
     ACTION_KIND_WAIT_FRAMES = 2;
     ACTION_KIND_TAKE_SCREENSHOT = 3;
     ACTION_KIND_ACTIVATE_SOURCE = 4;
-    ACTION_KIND_COMPARE_CAPTURES = 5;
+    reserved 5;
+    reserved "ACTION_KIND_COMPARE_CAPTURES";
     ACTION_KIND_GET_CAPTURE_STATUS = 6;
     ACTION_KIND_INSPECT_SHADER = 9;
     ACTION_KIND_GET_GPU_METRICS = 10;
@@ -582,6 +588,8 @@ enum ActionKind {
     ACTION_KIND_DUMP_TEXTURE_AFTER_PASS = 16;
     ACTION_KIND_DUMP_BUFFER_AFTER_PASS = 17;
     ACTION_KIND_NSIGHT_GPU_TRACE = 18;
+    ACTION_KIND_TEXTURE_STATS = 19;
+    ACTION_KIND_ACCUMULATE_TEXTURE = 20;
     reserved 7, 8;
     reserved "ACTION_KIND_CAPTURE_PASS", "ACTION_KIND_CAPTURE_MULTI";
 }
@@ -600,14 +608,6 @@ message TakeScreenshot {
 
 message ActivateSource {
     string source_uuid = 1;
-}
-
-message CompareCaptures {
-    uint32 baseline_action_index = 1;
-    uint32 candidate_action_index = 2;
-    string baseline_label = 3;
-    string candidate_label = 4;
-    VisualThresholds thresholds = 5;
 }
 
 message VisualThresholds {
@@ -676,11 +676,62 @@ message DumpTexture {
     ResourceSelector resource = 1;
     ArtifactFormat format = 2;
     string artifact_name = 3;
+    optional TextureRegion region = 4;
+}
+
+message TextureRegion {
+    uint32 x = 1;
+    uint32 y = 2;
+    uint32 width = 3;
+    uint32 height = 4;
 }
 
 message DumpBuffer {
     ResourceSelector resource = 1;
     string artifact_name = 2;
+}
+
+message TextureStats {
+    ResourceSelector resource = 1;
+    optional string pass_id = 2;
+    optional TextureRegion region = 3;
+}
+
+message AccumulateTexture {
+    ResourceSelector resource = 1;
+    optional string pass_id = 2;
+    optional TextureRegion region = 3;
+    uint32 frames = 4;
+    uint32 batches = 5;
+    repeated double luma_weights = 6;
+    repeated string outputs = 7;
+    string artifact_name = 8;
+}
+
+message TextureStatsReceipt {
+    uint64 frame_id = 1;
+    repeated TextureChannelStats channels = 2;
+}
+
+message TextureChannelStats {
+    uint32 channel = 1;
+    uint64 finite_count = 2;
+    optional double min = 3;
+    optional double max = 4;
+    optional double mean = 5;
+    optional double std = 6;
+    optional double p1 = 7;
+    optional double p50 = 8;
+    optional double p99 = 9;
+    uint64 nan = 10;
+    uint64 positive_inf = 11;
+    uint64 negative_inf = 12;
+    uint64 zero = 13;
+}
+
+message AccumulationReceipt {
+    CaptureReceipt capture = 1;
+    string summary_json = 2;
 }
 
 message GetPatchedShaders {
@@ -692,6 +743,7 @@ message DumpTextureAfterPass {
     ResourceSelector resource = 2;
     ArtifactFormat format = 3;
     string artifact_name = 4;
+    optional TextureRegion region = 5;
 }
 
 message DumpBufferAfterPass {
@@ -864,6 +916,8 @@ message ActionReceipt {
         EmptyReceipt empty = 19;
         ResetTemporalReceipt reset_temporal = 20;
         NsightGpuTraceReceipt nsight_gpu_trace = 21;
+        TextureStatsReceipt texture_stats = 22;
+        AccumulationReceipt accumulation = 23;
     }
 }
 
@@ -933,6 +987,12 @@ message GpuMetricsReceipt {
     string timing_unit = 1;
     repeated GpuTimingMetric metrics = 2;
     uint32 sampled_frames = 3;
+    repeated MissingGpuMetric missing = 4;
+}
+
+message MissingGpuMetric {
+    string metric_id = 1;
+    repeated string suggestions = 2;
 }
 
 message GpuTimingMetric {
@@ -943,6 +1003,7 @@ message GpuTimingMetric {
     uint64 p50_ns = 5;
     uint64 p95_ns = 6;
     repeated uint64 samples_ns = 7;
+    string main_source = 8;
 }
 
 message PatchedShadersReceipt {
@@ -1113,6 +1174,7 @@ message ResultProvenance {
     EnvironmentProvenance environment = 20;
     string pass_mapping_sha256 = 21;
     VcsCheckoutState vcs_checkout_state = 22;
+    string patch_sha256 = 23;
 }
 
 message EnvironmentProvenance {
@@ -1131,6 +1193,13 @@ message ResourceCatalog {
     repeated ResourceDescriptor resources = 1;
     repeated PassDescriptor passes = 2;
     string mapping_sha256 = 3;
+    CatalogContext catalog_context = 4;
+}
+
+message CatalogContext {
+    string active_source_uuid = 1;
+    string settings_sha256 = 2;
+    uint64 shader_generation = 3;
 }
 
 message PassDescriptor {
@@ -1139,6 +1208,14 @@ message PassDescriptor {
     string program_id = 3;
     uint32 order = 4;
     repeated string readable_resources = 5;
+    repeated PassProgram programs = 6;
+}
+
+message PassProgram {
+    string program_id = 1;
+    string stage = 2;
+    string entry_file = 3;
+    string main_source = 4;
 }
 
 enum PassStage {
@@ -1166,6 +1243,9 @@ message ResourceDescriptor {
     uint64 byte_size = 12;
     uint64 frame_id = 13;
     string physical_name = 14;
+    optional TextureRegion region = 15;
+    uint32 source_width = 16;
+    uint32 source_height = 17;
 }
 
 enum ResourceKind {

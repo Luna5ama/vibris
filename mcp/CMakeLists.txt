@@ -35,6 +35,7 @@ find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_path(STB_INCLUDE_DIRS "stb_image.h" REQUIRED)
 
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT MSVC)
     get_property(VIBRIS_IMPORTED_TARGETS DIRECTORY PROPERTY IMPORTED_TARGETS)
@@ -99,6 +100,11 @@ add_executable(vibris-descriptor-dump src/main/cpp/descriptor_dump.cpp)
 target_link_libraries(vibris-descriptor-dump PRIVATE vibris_control_protocol)
 
 add_library(vibris_mcp_core STATIC
+    src/main/cpp/artifact_prune.cpp
+    src/main/cpp/experiment_summary.cpp
+    src/main/cpp/image_data.cpp
+    src/main/cpp/image_compare.cpp
+    src/main/cpp/preset_previews.cpp
     src/main/cpp/config_document.cpp
     src/main/cpp/workspace_artifact_link.cpp
     src/main/cpp/workspace_identity_store.cpp
@@ -129,6 +135,7 @@ add_library(vibris_mcp_core STATIC
     src/main/cpp/workspace_copier.cpp
     src/main/cpp/workspace_binding.cpp)
 target_include_directories(vibris_mcp_core PUBLIC src/main/cpp)
+target_include_directories(vibris_mcp_core SYSTEM PRIVATE ${STB_INCLUDE_DIRS})
 target_link_libraries(vibris_mcp_core PUBLIC
     vibris_control_protocol
     LibArchive::LibArchive
@@ -148,6 +155,9 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(vibris-image-compare-tests src/test/cpp/image_compare_tests.cpp)
+    target_link_libraries(vibris-image-compare-tests PRIVATE vibris_mcp_core)
+    add_test(NAME LocalImageComparison COMMAND vibris-image-compare-tests)
     add_executable(vibris-state-tests src/test/cpp/state_tests.cpp)
     target_link_libraries(vibris-state-tests PRIVATE vibris_mcp_core)
 
@@ -410,6 +420,7 @@ if(BUILD_TESTING)
         add_test(NAME ${scenario} COMMAND vibris-workspace-artifact-link-tests ${scenario})
     endforeach()
     add_test(NAME ActionSchemaPassResourceV2Contract COMMAND vibris-action-schema-tests)
+    add_test(NAME CommitPatchFrozenAndIsolated COMMAND vibris-commit-source-tests CommitPatchFrozenAndIsolated)
     add_test(NAME NsightAnalyzerReplayContract COMMAND vibris-nsight-analyzer-tests)
     add_test(NAME DurableMatrixCheckpointResume COMMAND vibris-durable-workflow-tests)
     add_test(NAME CompileValidationCheckpointResume COMMAND vibris-durable-workflow-tests)

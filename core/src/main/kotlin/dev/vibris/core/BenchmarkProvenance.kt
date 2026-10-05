@@ -51,6 +51,7 @@ internal object BenchmarkProvenance {
             .setHeadChanged(false)
             .setStale(false)
             .setShaderTreeId(reference.shaderTreeId)
+            .setPatchSha256(reference.patchSha256)
             .setDirtyShaderDeltaSha256(reference.dirtyShaderDeltaSha256)
             .setSourceSnapshotSha256(source.snapshotSha256)
             .setActiveSourceUuid(source.uuid)

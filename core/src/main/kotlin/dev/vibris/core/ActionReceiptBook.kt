@@ -69,7 +69,7 @@ internal class ActionReceiptBook(actions: List<Action>) {
                     ReceiptStatus.RECEIPT_STATUS_FAILED
                 },
             )
-            .setError(ProtocolMessages.error(failure.code, failure.message ?: "Action execution failed."))
+            .setError(ProtocolMessages.error(failure.code, failure.message ?: "Action execution failed.").putAllDetails(failure.details))
             .build()
 
     private fun cancelledReceipt(entry: Entry, failure: RuntimeJobExecutor.Failure): ActionReceipt =

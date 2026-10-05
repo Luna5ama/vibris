@@ -109,18 +109,23 @@ class VibrisControlService internal constructor(
         request: ListPresetsRequest,
         observer: StreamObserver<ListPresetsResponse>,
     ) {
-        runtime.listPresets().whenComplete { presets, failure ->
+        runtime.listPresets().thenCombine(runtime.getRuntimeEnvironment()) { presets, environment ->
+            presets to environment
+        }.whenComplete { listed, failure ->
             if (failure != null) {
                 observer.onError(Status.INTERNAL.withDescription("PRESET_LIST_FAILED").asRuntimeException())
                 return@whenComplete
             }
+            val (presets, environment) = listed
             val response = ListPresetsResponse.newBuilder().setProtocolVersion(ProtocolMessages.V2)
+                .setVibrisVersion(environment.vibrisVersion)
             presets.forEach { preset ->
                 val tags = preset.tags.sorted()
                 response.addPresets(
                     ScenePreset.newBuilder()
                         .setPresetId(preset.presetId)
                         .setDisplayName(preset.displayName)
+                        .setDescription(preset.description)
                         .setVersion(preset.version)
                         .setContext(RuntimeJobContext.toProtocol(preset.context))
                         .addAllTags(tags)
@@ -141,7 +146,8 @@ class VibrisControlService internal constructor(
         request: ListResourcesRequest,
         observer: StreamObserver<ListResourcesResponse>,
     ) {
-        val resources = descriptor.resources()
+        val resources = descriptor.resources().let { catalog -> catalog.toBuilder()
+            .setCatalogContext(engine.catalogContext(catalog.catalogContext.shaderGeneration)).build() }
         val filtered = if (!request.hasFilter()) {
             resources
         } else {

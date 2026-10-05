@@ -240,7 +240,7 @@ inline proto::ServerMessage completed_visual_message() {
     add_capture_receipt(result, 5, 42);
     auto* comparison = result->add_action_receipts();
     comparison->set_action_index(6);
-    comparison->set_kind(proto::ACTION_KIND_COMPARE_CAPTURES);
+    comparison->set_kind(proto::ACTION_KIND_GET_CAPTURE_STATUS);
     comparison->set_status(proto::RECEIPT_STATUS_OK);
     comparison->mutable_comparison()->set_passed(true);
     comparison->mutable_comparison()->mutable_metrics()->set_mean_absolute_error(0.0);

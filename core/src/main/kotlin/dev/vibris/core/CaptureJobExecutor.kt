@@ -5,7 +5,6 @@ import dev.vibris.api.CaptureResourceNotFoundException
 import dev.vibris.api.CaptureResult
 import dev.vibris.api.ReloadResult
 import dev.vibris.api.ResourceCatalog
-import dev.vibris.protocol.v2.CompareReceipt
 import dev.vibris.protocol.v2.CaptureReceipt
 import dev.vibris.protocol.v2.ErrorCode
 import dev.vibris.protocol.v2.JobResult
@@ -21,7 +20,6 @@ internal class CaptureJobExecutor(
 ) {
     private val programs = CaptureProgramBuilder(maxActions)
     private val protocol = CaptureProtocolArtifacts()
-    private val comparisons = AbArtifactComparator()
 
     @Throws(RuntimeJobExecutor.Failure::class)
     fun prepareActions(
@@ -44,7 +42,8 @@ internal class CaptureJobExecutor(
         val prepared = if (
             captures.isEmpty() && !program.planningSession.hasDeferredCaptures &&
             !ProfileResultArtifacts.requested(job.submission) &&
-            program.steps.none { it.type == CaptureProgramBuilder.ActionType.NSIGHT }
+            program.steps.none { it.type == CaptureProgramBuilder.ActionType.NSIGHT ||
+                it.runtimeAction?.hasAccumulateTexture() == true }
         ) {
             null
         } else {
@@ -130,15 +129,14 @@ internal class CaptureJobExecutor(
 
     @Throws(RuntimeJobExecutor.Failure::class)
     fun commit(job: CoreJob, prepared: Prepared, captured: CaptureResult): JobResult =
-        commit(job, prepared, listOf(captured), null)
+        commit(job, prepared, listOf(captured))
 
     @Throws(RuntimeJobExecutor.Failure::class)
     fun commit(
         job: CoreJob,
         prepared: Prepared,
         captured: List<CaptureResult>,
-        comparison: CompareReceipt?,
-    ): JobResult = commit(job, prepared, prepared.plans, captured, comparison)
+    ): JobResult = commit(job, prepared, prepared.plans, captured)
 
     @Throws(RuntimeJobExecutor.Failure::class)
     fun commit(
@@ -146,7 +144,6 @@ internal class CaptureJobExecutor(
         prepared: Prepared,
         plans: List<CapturePlan>,
         captured: List<CaptureResult>,
-        comparison: CompareReceipt?,
         additionalArtifacts: List<GeneratedArtifact> = emptyList(),
         physicalNames: Map<String, String> = emptyMap(),
     ): JobResult {
@@ -158,7 +155,6 @@ internal class CaptureJobExecutor(
                 captured,
                 prepared.transaction,
                 prepared.diagnostics,
-                comparison,
                 additionalArtifacts,
                 physicalNames,
             )
@@ -167,24 +163,6 @@ internal class CaptureJobExecutor(
         }
     }
 
-    @Throws(RuntimeJobExecutor.Failure::class)
-    fun compare(
-        prepared: Prepared,
-        comparison: CaptureProgramBuilder.Comparison,
-    ): CompareReceipt {
-        try {
-            return comparisons.compare(
-                prepared.transaction,
-                comparison.baselinePlan,
-                comparison.candidatePlan,
-                comparison.baselineLabel,
-                comparison.candidateLabel,
-                comparison.thresholds,
-            )
-        } catch (exception: Exception) {
-            throw failure(exception)
-        }
-    }
 
     fun captureReceipt(
         plan: CapturePlan,
@@ -354,7 +332,9 @@ internal class CaptureJobExecutor(
         @JvmStatic
         fun failure(exception: Throwable?): RuntimeJobExecutor.Failure {
             var cause = exception
+            var root = exception
             while (cause != null && cause !== cause.cause) {
+                root = cause
                 when (cause) {
                     is ArtifactManager.JobTooLargeException,
                     is ArithmeticException,
@@ -378,6 +358,8 @@ internal class CaptureJobExecutor(
                 cause = cause.cause
             }
             return RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_CAPTURE_FAILED, "Capture artifact creation failed.")
+                .withDetails(mapOf("cause" to (root?.javaClass?.name ?: "unknown"),
+                    "reason" to (root?.message?.take(512) ?: "No error message")))
         }
 
         private fun closeAfterFailure(transaction: ArtifactManager.JobTransaction?, original: Exception) {

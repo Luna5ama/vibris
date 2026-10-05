@@ -251,7 +251,7 @@ void GitArchivePipe::close() noexcept {
 GitArchivePipe GitRepository::launch_git(
     const std::vector<std::wstring>& arguments, const std::filesystem::path& requested_executable,
     const std::size_t max_stdout_bytes, const std::string_view overflow_code,
-    const std::string_view overflow_message) {
+    const std::string_view overflow_message, const std::filesystem::path& index) {
     auto stdout_pipe = make_pipe(1024 * 1024);
     auto stderr_pipe = make_pipe(64 * 1024);
     const auto executable = requested_executable.empty() ? resolve_git_executable() : requested_executable;
@@ -279,7 +279,7 @@ GitArchivePipe GitRepository::launch_git(
     startup.StartupInfo.hStdError = stderr_pipe.write;
     startup.lpAttributeList = attribute_list;
     PROCESS_INFORMATION process{};
-    auto environment = sanitized_git_environment();
+    auto environment = sanitized_git_environment(index);
     const auto deadline = std::chrono::steady_clock::now() + kGitOperationTimeout;
     const BOOL created = CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
@@ -361,6 +361,54 @@ std::string GitRepository::shader_tree_id(std::string_view revision) const {
 bool GitRepository::shader_worktree_dirty() const {
     return !query({L"git", L"-C", repository_.wstring(), L"status", L"--porcelain=v1", L"-z",
         L"--untracked-files=all", L"--", L"shaders"}, 16 * 1024 * 1024).empty();
+}
+
+std::string GitRepository::apply_shader_patch(std::string_view commit,
+    const std::filesystem::path& patch, const std::filesystem::path& index) const {
+    const auto run = [&](std::vector<std::wstring> args) {
+        args.insert(args.begin(), {L"git", L"-C", repository_.wstring()});
+        auto process = launch_git(args, {}, 16 * 1024 * 1024, "PATCH_APPLY_FAILED",
+            "Patch query exceeded its limit.", index);
+        std::array<std::byte, 4096> buffer{};
+        std::string output;
+        for (auto count = process.read(buffer); count != 0; count = process.read(buffer))
+            output.append(reinterpret_cast<const char*>(buffer.data()), count);
+        if (process.wait() != 0) throw StateError("PATCH_APPLY_FAILED",
+            "Git could not apply the patch: " + process.diagnostics().substr(0, 2048));
+        return output;
+    };
+    const auto absolute_patch = std::filesystem::absolute(patch).wstring();
+    const auto stat = run({L"apply", L"--numstat", L"-z", L"--", absolute_patch});
+    const auto validate_path = [](std::string_view path) {
+        const std::filesystem::path value{std::string(path)};
+        if (!path.starts_with("shaders/") || value.is_absolute() || value.has_root_name() ||
+            std::any_of(value.begin(), value.end(), [](const auto& part) { return part == ".."; }))
+            throw StateError("PATCH_OUTSIDE_SHADERS", "Patch path is outside shaders/: " + std::string(path));
+    };
+    std::size_t position = 0;
+    const auto token = [&]() {
+        const auto end = stat.find('\0', position);
+        if (end == std::string::npos) throw StateError("PATCH_APPLY_FAILED", "Git emitted malformed patch paths.");
+        const auto value = std::string_view(stat).substr(position, end - position);
+        position = end + 1;
+        return value;
+    };
+    while (position < stat.size()) {
+        const auto entry = token();
+        const auto first = entry.find('\t');
+        const auto second = first == std::string_view::npos ? first : entry.find('\t', first + 1);
+        if (second == std::string_view::npos) throw StateError("PATCH_APPLY_FAILED", "Git emitted malformed patch numstat.");
+        const auto path = entry.substr(second + 1);
+        if (path.empty()) { validate_path(token()); validate_path(token()); }
+        else validate_path(path);
+    }
+    static_cast<void>(run({L"read-tree", std::filesystem::path(commit).wstring()}));
+    static_cast<void>(run({L"apply", L"--cached", L"--check", L"--", absolute_patch}));
+    static_cast<void>(run({L"apply", L"--cached", L"--", absolute_patch}));
+    auto tree = run({L"write-tree"});
+    while (!tree.empty() && (tree.back() == '\r' || tree.back() == '\n')) tree.pop_back();
+    if (!is_full_sha(tree)) throw StateError("PATCH_APPLY_FAILED", "Git did not return the patched tree.");
+    return tree;
 }
 
 GitArchivePipe GitRepository::open_shader_archive(

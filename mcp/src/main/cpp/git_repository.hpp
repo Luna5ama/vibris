@@ -23,6 +23,7 @@ public:
 
     [[nodiscard]] std::size_t read(std::span<std::byte> buffer);
     [[nodiscard]] int wait();
+    [[nodiscard]] const std::string& diagnostics() const noexcept { return stderr_text_; }
 
 private:
     GitArchivePipe(void* process, void* stdout_read, void* stderr_read,
@@ -55,6 +56,8 @@ public:
     [[nodiscard]] std::string current_branch() const;
     [[nodiscard]] std::string shader_tree_id(std::string_view revision) const;
     [[nodiscard]] bool shader_worktree_dirty() const;
+    [[nodiscard]] std::string apply_shader_patch(std::string_view commit,
+        const std::filesystem::path& patch, const std::filesystem::path& index) const;
     [[nodiscard]] GitArchivePipe open_shader_archive(
         std::string_view full_sha, std::size_t max_archive_bytes) const;
 
@@ -65,7 +68,8 @@ private:
     static GitArchivePipe launch_git(const std::vector<std::wstring>& arguments,
         const std::filesystem::path& executable = {}, std::size_t max_stdout_bytes = 0,
         std::string_view overflow_code = "INTERNAL_ERROR",
-        std::string_view overflow_message = "Git output exceeded its limit.");
+        std::string_view overflow_message = "Git output exceeded its limit.",
+        const std::filesystem::path& index = {});
 
     std::filesystem::path repository_;
     friend struct GitRepositorySecurityAccess;

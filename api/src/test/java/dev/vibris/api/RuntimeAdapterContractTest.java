@@ -732,7 +732,7 @@ class RuntimeAdapterContractTest {
             "reloaded", "plan", "reset", "resetCompletedAtUnixMs", "warmupFrames", "anchorFrame",
             "warmupEndFrame", "capture");
         assertRecord(CapturePlan.class, "targets");
-        assertRecord(CapturePlan.ResourceSelector.class, "kind", "logicalName", "textureView", "mipLevel", "layer");
+        assertRecord(CapturePlan.ResourceSelector.class, "kind", "logicalName", "textureView", "mipLevel", "layer", "region");
         assertRecord(CapturePlan.Target.class, "resource", "format", "artifactName", "outputs");
         assertRecord(CapturePlan.AfterPassRequest.class, "mappingSha256", "pass", "target");
         assertRecord(CapturePlan.AfterPassReceipt.class, "request", "passOccurrence", "physicalName", "capture");
@@ -746,15 +746,16 @@ class RuntimeAdapterContractTest {
         assertRecord(EffectiveShaderSettings.class, "settings", "settingsSha256");
         assertRecord(EffectiveShaderSettings.Setting.class, "name", "value", "defaultValue", "origin");
         assertRecord(ReloadResult.class, "successful", "activeStatePreserved", "effectiveSettings", "diagnostics");
-        assertRecord(ResourceCatalog.class, "resources", "passes", "mappingSha256");
+        assertRecord(ResourceCatalog.class, "resources", "passes", "mappingSha256", "shaderGeneration");
         assertRecord(RuntimeEnvironment.class, "minecraftVersion", "irisVersion", "vibrisVersion", "javaVersion",
             "operatingSystem", "gpuVendor", "gpuRenderer", "openglVersion", "driverVersion");
         assertRecord(ResourceCatalog.PassDescriptor.class,
-            "passId", "stage", "programId", "order", "readableResources");
+            "passId", "stage", "programId", "order", "readableResources", "programs");
         assertRecord(ResourceCatalog.ResourceDescriptor.class,
             "logicalName", "kind", "availableViews", "width", "height", "depth", "mipLevels", "layers",
             "internalFormat", "channelCount", "scalarType", "byteSize", "frameId", "semanticLabel", "category",
-            "textureTarget", "channelLayout", "numericClass", "componentBits", "readbackFormat", "readbackType");
+            "textureTarget", "channelLayout", "numericClass", "componentBits", "readbackFormat", "readbackType",
+            "region", "sourceWidth", "sourceHeight");
     }
 
     private static void assertRecord(Class<?> type, String... components) {

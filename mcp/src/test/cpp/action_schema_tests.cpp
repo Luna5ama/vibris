@@ -1,4 +1,6 @@
 #include "tool_registry.hpp"
+#include "result_mapper.hpp"
+#include "artifact_prune.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,6 +9,8 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -27,6 +31,7 @@ const Json& definition(const ToolRegistry& registry, const std::string_view name
 
 void verify_typed_schema(const Json& schema, const std::string& path) {
     require(schema.is_object(), path + " is not an object schema");
+    require(!schema.contains("oneOf"), path + " exposes an unflattened oneOf");
     if (schema.contains("oneOf")) {
         require(schema.at("oneOf").is_array() && !schema.at("oneOf").empty(), path + " has an empty oneOf");
         for (std::size_t index = 0; index < schema.at("oneOf").size(); ++index) {
@@ -60,8 +65,10 @@ void exact_v2_tool_catalog() {
         "vibris_run_matrix",
         "vibris_job",
         "vibris_artifacts",
+        "vibris_compare",
+        "vibris_preview_presets",
     };
-    require(registry.definitions().size() == expected.size(), "tools/list must expose exactly ten tools");
+    require(registry.definitions().size() == expected.size(), "tools/list exposes an unexpected tool count");
     std::unordered_set<std::string> names;
     for (const auto& tool : registry.definitions()) {
         const auto name = tool.at("name").get<std::string>();
@@ -220,10 +227,10 @@ void typed_actions_reject_aliases() {
          {"format", "bin"}, {"artifact_name", "color-bin"}},
         {{"type", "dump_buffer"}, {"resource", {{"logical_name", "sceneData"}}},
          {"artifact_name", "scene-data"}},
-        {{"type", "dump_texture_after_pass"}, {"pass_id", "composite/composite21"},
+        {{"type", "dump_texture"}, {"pass_id", "composite/composite21"},
          {"resource", {{"logical_name", "colortex0"}, {"view", "current"}, {"mip_level", 0}, {"layer", 0}}},
          {"format", "png"}, {"artifact_name", "shade-diffuse"}},
-        {{"type", "dump_buffer_after_pass"}, {"pass_id", "prepare/prepare3"},
+        {{"type", "dump_buffer"}, {"pass_id", "prepare/prepare3"},
          {"resource", {{"logical_name", "sceneData"}}}, {"artifact_name", "scene-data-after"}},
         {{"type", "list_resources"}, {"kinds", Json::array({"texture"})}},
     });
@@ -253,7 +260,8 @@ void typed_actions_reject_aliases() {
             "removed raw replay-capture action remained public");
     }
 
-    for (const auto* old_type : {"list_textures", "list_buffers", "dump_texture_v2"}) {
+    for (const auto* old_type : {"list_textures", "list_buffers", "dump_texture_v2",
+             "dump_texture_after_pass", "dump_buffer_after_pass"}) {
         request["actions"] = Json::array({{{"type", old_type}}});
         require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", request)),
             "legacy action alias was accepted");
@@ -267,7 +275,7 @@ void typed_actions_reject_aliases() {
         "physical texture suffix alias was accepted in an action");
 
     request["actions"] = Json::array({
-        {{"type", "dump_texture_after_pass"}, {"pass_id", "composite/composite21"},
+        {{"type", "dump_texture"}, {"pass_id", "composite/composite21"},
          {"resource", {{"logical_name", "colortex0"}}},
          {"format", "png"}, {"artifact_name", "missing-view"}},
     });
@@ -275,7 +283,7 @@ void typed_actions_reject_aliases() {
         "texture selector without an explicit view was accepted");
 
     request["actions"] = Json::array({
-        {{"type", "dump_buffer_after_pass"}, {"pass_id", "prepare/prepare3"},
+        {{"type", "dump_buffer"}, {"pass_id", "prepare/prepare3"},
          {"resource", {{"logical_name", "sceneData"}, {"view", "current"}}},
          {"artifact_name", "buffer-view"}},
     });
@@ -283,7 +291,7 @@ void typed_actions_reject_aliases() {
         "buffer selector with a texture view was accepted");
 
     request["actions"] = Json::array({
-        {{"type", "dump_texture_after_pass"}, {"pass_id", "composite21"},
+        {{"type", "dump_texture"}, {"pass_id", "composite21"},
          {"resource", {{"logical_name", "colortex0"}, {"view", "current"}}},
          {"format", "png"}, {"artifact_name", "fuzzy-pass"}},
     });
@@ -377,6 +385,120 @@ void local_nsight_analysis_shape_is_strict_and_typed() {
         "unknown local Nsight query was accepted");
 }
 
+void agent_projection_preserves_full_results() {
+    const ToolRegistry registry;
+    const auto& resource = definition(registry, "vibris_run_actions").at("inputSchema").at("properties")
+        .at("actions").at("items").at("properties").at("resource");
+    const auto required = resource.value("required", Json::array());
+    require(std::find(required.begin(), required.end(), "view") == required.end(),
+        "flattened action schema incorrectly requires a texture view for buffer dumps");
+    std::ifstream stream(std::filesystem::path(__FILE__).parent_path() / "alpha_piscium_result.json");
+    require(stream.good(), "missing Alpha Piscium fixture");
+    const auto original = Json::parse(stream);
+    const auto before = original.dump();
+    const auto projected = vibris::mcp::ResultMapper::agent_projection("vibris_job", original, Json::object());
+    std::cout << "Alpha Piscium projected bytes=" << projected.dump().size() << '\n';
+    require(original.dump() == before, "projection mutated full result");
+    require(projected.dump().size() <= 15 * 1024, "Alpha Piscium projected result exceeds 15 KB: " + std::to_string(projected.dump().size()));
+    const auto& full = original.at("result").at("provenance").at("effective_settings");
+    const auto& compact = projected.at("result").at("provenance").at("effective_settings");
+    require(full.at("settings_sha256") == compact.at("settings_sha256"), "settings SHA was lost");
+    require(compact.at("setting_count") == full.at("settings").size(), "setting count changed");
+    const auto& expanded = compact.contains("settings_ref")
+        ? projected.at(Json::json_pointer(compact.at("settings_ref").get<std::string>())) : compact;
+    for (const auto& item : expanded.at("non_default")) {
+        const auto found = std::find_if(full.at("settings").begin(), full.at("settings").end(),
+            [&](const auto& setting) { return setting.at("name") == item.at("name"); });
+        require(found != full.at("settings").end(), "projection invented a setting");
+        require(found->value("changed_from_default", false) || found->at("origin") == "SHADER_SETTING_ORIGIN_PRESET" ||
+            found->at("origin") == "SHADER_SETTING_ORIGIN_REQUEST_OVERRIDE", "default setting leaked");
+    }
+    Json terminal{{"workflow_state", "completed"}, {"events", Json::array({1})}};
+    require(!vibris::mcp::ResultMapper::agent_projection("vibris_job", terminal, Json::object()).contains("events"),
+        "terminal events leaked");
+    require(vibris::mcp::ResultMapper::agent_projection("vibris_job", terminal, {{"event_cursor", 0}}).contains("events"),
+        "explicit terminal events disappeared");
+    std::ifstream catalog_stream(std::filesystem::path(__FILE__).parent_path() / "alpha_piscium_resources.json");
+    const auto catalog = Json::parse(catalog_stream);
+    const auto compact_catalog = vibris::mcp::ResultMapper::agent_projection("vibris_list_resources", catalog, Json::object());
+    std::cout << "Alpha Piscium resource catalog bytes=" << compact_catalog.dump().size() << '\n';
+      require(compact_catalog.dump().size() <= 25 * 1024, "Alpha resource catalog exceeds 25 KB");
+      const ToolRegistry failed_registry([&](std::string_view, const Json&) -> vibris::mcp::ToolOutcome {
+          return vibris::mcp::ToolFailure{"CAPTURE_FAILED", "fixture failure", false,
+              {{"effective_settings", full}}};
+      });
+      const auto failed_result = std::get<Json>(failed_registry.invoke("vibris_get_status",
+          {{"worktree_root", "I:\\shader-worktree"}}));
+      const auto& failed_settings = failed_result["structuredContent"]["error"]["details"]["effective_settings"];
+      require(failed_settings.contains("non_default") && !failed_settings.contains("settings"),
+          "failure details bypassed the common projection");
+      const auto& compressed = compact_catalog.at("catalog");
+      for (std::size_t p = 0; p < compressed.at("passes").size(); ++p) {
+          const auto& pass = compressed["passes"][p];
+          const auto pass_id = pass.at("pass_id").get<std::string>();
+          for (std::size_t i = 0; i < pass.at("programs").size(); ++i) {
+              const auto& program = pass["programs"][i];
+              const auto& original = catalog["catalog"]["passes"][p]["programs"][i];
+              const auto& defaults = compressed.at("program_defaults");
+              const auto id = program.value("program_id", pass_id.substr(pass_id.find_last_of('/') + 1));
+              const auto stage = program.value("stage", defaults.at("stage").get<std::string>());
+              const auto entry = program.contains("entry_file") ? program.at("entry_file").get<std::string>() :
+                  defaults.contains("entry_file") ? defaults.at("entry_file").get<std::string>() :
+                  "/" + id + "." + compressed.at("program_stage_extensions").at(stage).get<std::string>();
+              const auto main = program.contains("main_source") ? program.at("main_source") : defaults.at("main_source");
+              require(id == original.at("program_id").get<std::string>() && stage == original.at("stage").get<std::string>() &&
+                  entry == original.at("entry_file").get<std::string>() && main == original.at("main_source"),
+                  "program projection lost association or source paths");
+          }
+      }
+    require(compressed.at("mapping_sha256") == catalog.at("catalog").at("mapping_sha256"), "catalog SHA was lost");
+    for (std::size_t i = 0; i < compressed.at("resources").size(); ++i) {
+        const auto& row = compressed["resources"][i];
+        const auto& full_resource = catalog["catalog"]["resources"][i];
+        const auto& layout = compressed["resource_layouts"].at(row.at("layout_ref").get<std::string>());
+        require(row.at("logical_name") == full_resource.at("logical_name") &&
+            layout.at("byte_size") == full_resource.at("byte_size"), "resource layout deduplication changed identity or size");
+        if (layout.at("kind") != "BUFFER") require(layout.at("width") == full_resource.at("width") &&
+            layout.at("height") == full_resource.at("height"), "resource layout lost texture dimensions");
+    }
+}
+
+void branch_errors_and_prune_are_precise() {
+    const ToolRegistry registry([](std::string_view, const Json& args) { return args; });
+    Json request{{"worktree_root", "I:\\shader-worktree"}, {"artifact_path", "x"},
+        {"query", {{"operation", "metric"}}}};
+    auto result = registry.invoke("mcp_vibiris_nsight_analyze", request);
+    require(std::holds_alternative<InvocationError>(result) &&
+        std::get<InvocationError>(result).message == "arguments.query.name is required", "missing branch field is not precise");
+    request["query"]["operation"] = "invalid";
+    result = registry.invoke("mcp_vibiris_nsight_analyze", request);
+    require(std::get<InvocationError>(result).message.find("summary") != std::string::npos,
+        "invalid discriminator omitted valid choices");
+    const Json manifests = Json::array({
+        {{"manifest_id", "new"}, {"manifest_sha256", "sha-new"}, {"job_id", "job"}, {"recipe", "profile"},
+            {"completed_at_unix_ms", 20}, {"total_bytes", 10}},
+        {{"manifest_id", "old"}, {"manifest_sha256", "sha-old"}, {"job_id", "job"}, {"recipe", "profile"},
+            {"completed_at_unix_ms", 10}, {"total_bytes", 30}},
+        {{"manifest_id", "other"}, {"manifest_sha256", "sha-other"}, {"job_id", "other"}, {"recipe", "profile"},
+            {"completed_at_unix_ms", 1}, {"total_bytes", 40}}});
+    std::size_t deletes = 0;
+    const auto manage = [&](const Json& args) -> vibris::mcp::ToolOutcome {
+        if (args.at("operation") == "list") return Json{{"manifests", manifests}};
+        ++deletes;
+        require(args.at("manifest_id") == "old" && args.at("expected_manifest_sha256") == "sha-old",
+            "prune selected wrong manifest or omitted SHA");
+        return vibris::mcp::ToolFailure{"SHA_CONFLICT", "concurrent update"};
+    };
+    const Json args{{"job_ids", Json::array({"job"})}, {"keep_latest", 1}};
+    const auto pruned = std::get<Json>(vibris::mcp::prune_artifacts({}, args, manage));
+    require(deletes == 1 && pruned.at("failures").size() == 1 && pruned.at("freed_bytes") == 0,
+        "prune counted a SHA conflict as deletion");
+    auto dry = args;
+    dry["dry_run"] = true;
+    const auto preview = std::get<Json>(vibris::mcp::prune_artifacts({}, dry, manage));
+    require(deletes == 1 && preview.at("selected_bytes") == 30, "dry run deleted or miscounted bytes");
+}
+
 } // namespace
 
 int main() {
@@ -387,6 +509,8 @@ int main() {
         compile_validation_shape_is_strict_and_typed();
         local_nsight_analysis_shape_is_strict_and_typed();
         bounded_single_structured_result();
+        agent_projection_preserves_full_results();
+        branch_errors_and_prune_are_precise();
         std::cout << "PASS ActionSchemaV2ToolContract\n";
         return 0;
     } catch (const std::exception& error) {

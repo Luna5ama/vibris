@@ -62,6 +62,7 @@ class IrisVibrisRuntimeAdapterTest {
 		for (int frame = 0; frame < 31; frame++) frames.renderedFrame();
 		assertFalse(wait.isDone(), "31 render-tail notifications must not satisfy a 32-frame wait");
 		frames.renderedFrame();
+		host.runClientTasks();
 		assertEquals(32L, wait.join());
 		assertTrue(host.clientThreadCalls > 0);
 	}

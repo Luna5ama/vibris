@@ -7,18 +7,20 @@ import java.util.regex.Pattern
 data class CapturePlan(@field:DefensiveSnapshot val targets: List<Target>) {
 
     @JvmRecord
-    data class ResourceSelector(
+    data class ResourceSelector @JvmOverloads constructor(
         val kind: ResourceCatalog.ResourceKind,
         val logicalName: String,
         val textureView: ResourceCatalog.TextureView?,
         val mipLevel: Int,
         val layer: Int,
+        val region: TextureRegion? = null,
     ) {
         init {
             require(ResourceCatalog.isLogicalName(logicalName)) {
                 "logicalName must be a canonical logical resource name"
             }
             require(mipLevel >= 0 && layer >= 0) { "Mip level and layer must be non-negative" }
+            require(region == null || kind == ResourceCatalog.ResourceKind.TEXTURE || kind == ResourceCatalog.ResourceKind.FINAL_FRAMEBUFFER) { "Only texture selectors support a region" }
             when (kind) {
                 ResourceCatalog.ResourceKind.TEXTURE -> require(textureView != null) {
                     "Texture selectors require an explicit logical view"
@@ -33,6 +35,16 @@ data class CapturePlan(@field:DefensiveSnapshot val targets: List<Target>) {
                 -> require(textureView == null && mipLevel == 0 && layer == 0) {
                     "Non-texture selectors cannot specify a view, mip level, or layer"
                 }
+            }
+        }
+    }
+
+    @JvmRecord
+    data class TextureRegion(val x: Int, val y: Int, val width: Int, val height: Int) {
+        init { require(x >= 0 && y >= 0 && width > 0 && height > 0) { "Texture region must be nonempty and nonnegative" } }
+        fun validate(sourceWidth: Int, sourceHeight: Int) {
+            require(x <= sourceWidth - width && y <= sourceHeight - height) {
+                "Texture region exceeds mip dimensions ${sourceWidth}x$sourceHeight"
             }
         }
     }

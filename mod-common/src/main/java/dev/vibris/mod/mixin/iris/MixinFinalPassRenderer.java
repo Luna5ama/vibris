@@ -48,7 +48,18 @@ public abstract class MixinFinalPassRenderer {
 	@Redirect(method = "renderFinalPass", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/gl/GLDebug;popGroup()V"), require = 1, expect = 1)
 	private void vibris$captureBoundary() {
 		IrisVibrisPassCapture capture = ((VibrisPipeline) pipeline).vibris$getPassCapture();
-		if (vibris$handle == null) vibris$handle = capture.register(ResourceCatalog.PassStage.FINAL, "final");
+		if (vibris$handle == null) {
+			// The field's private nested type cannot be named in a Java @Shadow declaration.
+			try {
+				var field = FinalPassRenderer.class.getDeclaredField("finalPass");
+				field.setAccessible(true);
+				Object pass = field.get(this);
+				vibris$handle = capture.register(ResourceCatalog.PassStage.FINAL, "final",
+					pass == null ? java.util.List.of() : ((dev.vibris.mod.VibrisProgramInfo) pass).vibris$programs());
+			} catch (ReflectiveOperationException failure) {
+				throw new IllegalStateException("Cannot inspect the final render pass", failure);
+			}
+		}
 		capture.captureBoundary(vibris$handle, vibris$flipsAfterPass);
 		GLDebug.popGroup();
 	}

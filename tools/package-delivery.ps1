@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $McpExe,
-    [Parameter(Mandatory)] [Alias("IrisJar")] [ValidateNotNullOrEmpty()] [string] $PatchedIrisJar,
+    [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $VibrisModJar,
     [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $BuildReceipt,
     [string] $OutputDirectory,
     [Parameter(DontShow)]
@@ -368,7 +368,7 @@ function Get-ExistingDeliveryRecord
         throw "Existing delivery must contain exactly two ordinary files: $Directory"
     }
     $mcp = @($entries | Where-Object { $_.Name -ceq "vibris-mcp.exe" })
-    $jar = @($entries | Where-Object { $_.Name -cmatch '^iris-fabric-.+-local[.]jar$' })
+    $jar = @($entries | Where-Object { $_.Name -cmatch '^vibris-fabric-.+[.]jar$' })
     if ($mcp.Count -ne 1 -or $jar.Count -ne 1)
     {
         throw "Existing delivery has unexpected file names: $Directory"
@@ -376,7 +376,7 @@ function Get-ExistingDeliveryRecord
     return [ordered] @{
         present = $true
         mcp = Get-FileRecord -Path $mcp[0].FullName -Name $mcp[0].Name
-        iris = Get-FileRecord -Path $jar[0].FullName -Name $jar[0].Name
+        mod = Get-FileRecord -Path $jar[0].FullName -Name $jar[0].Name
     }
 }
 
@@ -389,14 +389,14 @@ function Assert-DeliveryRecordShape
 
     if (-not [bool] $Record.present) { return }
     $mcpName = [string] $Record.mcp.name
-    $irisName = [string] $Record.iris.name
+    $modName = [string] $Record.mod.name
     if ($mcpName -cne "vibris-mcp.exe" -or
-        $irisName -cnotmatch '^iris-fabric-.+-local[.]jar$' -or
-        [string]::Equals($mcpName, $irisName, [System.StringComparison]::OrdinalIgnoreCase))
+        $modName -cnotmatch '^vibris-fabric-.+[.]jar$' -or
+        [string]::Equals($mcpName, $modName, [System.StringComparison]::OrdinalIgnoreCase))
     {
         throw "$Label has invalid or duplicate delivery record names."
     }
-    foreach ($fileRecord in @($Record.mcp, $Record.iris))
+    foreach ($fileRecord in @($Record.mcp, $Record.mod))
     {
         if ([long] $fileRecord.length -lt 0 -or
             [string] $fileRecord.sha256 -cnotmatch '^[0-9A-F]{64}$')
@@ -430,14 +430,14 @@ function Assert-DeliveryMatches
     }
     $names = @($entries | ForEach-Object Name)
     if ($names -cnotcontains [string] $Record.mcp.name -or
-        $names -cnotcontains [string] $Record.iris.name)
+        $names -cnotcontains [string] $Record.mod.name)
     {
         throw "$Label file names do not match its transaction record: $Directory"
     }
     Assert-RecordMatches -Path (Join-Path $Directory ([string] $Record.mcp.name)) `
         -Record $Record.mcp -Label "$Label MCP"
-    Assert-RecordMatches -Path (Join-Path $Directory ([string] $Record.iris.name)) `
-        -Record $Record.iris -Label "$Label Iris JAR"
+    Assert-RecordMatches -Path (Join-Path $Directory ([string] $Record.mod.name)) `
+        -Record $Record.mod -Label "$Label Vibris mod JAR"
 }
 
 function Get-DeliveryRecordNames
@@ -445,7 +445,7 @@ function Get-DeliveryRecordNames
     param([Parameter(Mandatory)] [object] $Record)
 
     if (-not [bool] $Record.present) { return @() }
-    return @([string] $Record.mcp.name, [string] $Record.iris.name)
+    return @([string] $Record.mcp.name, [string] $Record.mod.name)
 }
 
 function Test-DeliveryMatches
@@ -756,7 +756,7 @@ function Invoke-GitText
         [Parameter(Mandatory)] [string] $Label
     )
 
-    return Invoke-TrustedGitText -Root $Root -Arguments $Arguments -Label $Label
+    return Invoke-TrustedGitText -Root $Root -Arguments $Arguments -Label $Label -TimeoutSeconds 30
 }
 
 function Get-RepositorySourceState
@@ -779,7 +779,7 @@ function Get-RepositorySourceState
     $submodules = Invoke-GitText -Root $root -Arguments @(
         "submodule", "status", "--recursive") -Label "Git submodule state"
     $untrackedText = Invoke-GitText -Root $root -Arguments @(
-        "ls-files", "-z", "--others", "--exclude-standard") -Label "Git untracked source list"
+        "ls-files", "-z", "--others", "--exclude-standard", "--", ".", ":(exclude).vibris/**") -Label "Git untracked source list"
     $untracked = [System.Collections.Generic.List[object]]::new()
     foreach ($relative in @($untrackedText -split [char] 0 | Where-Object { $_.Length -ne 0 } |
         Sort-Object -CaseSensitive))
@@ -924,14 +924,14 @@ $OutputDirectory = ConvertTo-NormalizedPath -Path $OutputDirectory
 $outputParent = Ensure-OrdinaryDirectory -Path (Split-Path -Parent $OutputDirectory) -Label "Delivery parent"
 
 $McpExe = Resolve-OrdinaryFile -Path $McpExe -Label "MCP executable"
-$PatchedIrisJar = Resolve-OrdinaryFile -Path $PatchedIrisJar -Label "Patched Iris JAR"
+$VibrisModJar = Resolve-OrdinaryFile -Path $VibrisModJar -Label "Vibris mod JAR"
 if ((Split-Path -Leaf $McpExe) -cne "vibris-mcp.exe")
 {
     throw "MCP executable must be named vibris-mcp.exe: $McpExe"
 }
-if ((Split-Path -Leaf $PatchedIrisJar) -cnotmatch '^iris-fabric-.+-local[.]jar$')
+if ((Split-Path -Leaf $VibrisModJar) -cnotmatch '^vibris-fabric-.+[.]jar$')
 {
-    throw "Patched Iris JAR must be an iris-fabric-*-local.jar artifact: $PatchedIrisJar"
+    throw "Vibris mod JAR must be an vibris-fabric-*.jar artifact: $VibrisModJar"
 }
 
 $receiptRoot = ConvertTo-NormalizedPath -Path (Join-Path $buildRoot ".delivery-receipts")
@@ -983,7 +983,7 @@ $buildStarted = ConvertTo-ReceiptUtc -Value $receipt.build_started_utc `
 $buildCompleted = ConvertTo-ReceiptUtc -Value $receipt.build_completed_utc `
     -Label "Build receipt build_completed_utc"
 $phaseTimes = @{}
-foreach ($phaseName in @("native", "protocol", "iris"))
+foreach ($phaseName in @("native", "protocol", "mod"))
 {
     $phase = $receipt.phases.$phaseName
     $started = ConvertTo-ReceiptUtc -Value $phase.started_utc `
@@ -1026,9 +1026,9 @@ Assert-ReceiptArtifact -Record $receipt.scripts.package -ExpectedPath $packageSc
 Assert-ReceiptArtifact -Record $receipt.artifacts.mcp -ExpectedPath $McpExe `
     -Label "MCP build provenance" -ProducedAfterUtc $phaseTimes.native.started `
     -ProducedBeforeUtc $phaseTimes.native.completed
-Assert-ReceiptArtifact -Record $receipt.artifacts.iris -ExpectedPath $PatchedIrisJar `
-    -Label "Iris build provenance" -ProducedAfterUtc $phaseTimes.iris.started `
-    -ProducedBeforeUtc $phaseTimes.iris.completed
+Assert-ReceiptArtifact -Record $receipt.artifacts.mod -ExpectedPath $VibrisModJar `
+    -Label "Vibris mod build provenance" -ProducedAfterUtc $phaseTimes.mod.started `
+    -ProducedBeforeUtc $phaseTimes.mod.completed
 Assert-ReceiptArtifact -Record $receipt.artifacts.java_descriptor `
     -ExpectedPath $validatedAuditSources.java -Label "Java descriptor provenance" `
     -ProducedAfterUtc $phaseTimes.protocol.started -ProducedBeforeUtc $phaseTimes.protocol.completed
@@ -1108,7 +1108,7 @@ if ($testAfterAudit)
 }
 
 if ((Test-IsSameOrDescendant -Root $OutputDirectory -Candidate $McpExe) -or
-    (Test-IsSameOrDescendant -Root $OutputDirectory -Candidate $PatchedIrisJar) -or
+    (Test-IsSameOrDescendant -Root $OutputDirectory -Candidate $VibrisModJar) -or
     (Test-IsSameOrDescendant -Root $OutputDirectory -Candidate $BuildReceipt) -or
     (Test-IsSameOrDescendant -Root $receiptRoot -Candidate $OutputDirectory))
 {
@@ -1133,7 +1133,7 @@ if (Test-IsSameOrDescendant -Root $transactionsRoot -Candidate $OutputDirectory)
 }
 $transactionRoot = Ensure-OrdinaryDirectory -Path (Join-Path $transactionsRoot $targetKey) `
     -Label "Target transaction root"
-foreach ($input in @($McpExe, $PatchedIrisJar, $BuildReceipt, $sessionLockPath))
+foreach ($input in @($McpExe, $VibrisModJar, $BuildReceipt, $sessionLockPath))
 {
     if (Test-IsSameOrDescendant -Root $transactionRoot -Candidate $input)
     {
@@ -1207,16 +1207,16 @@ try
                     -Label "Committed rollback"
             }
             Remove-ExactFlatDirectory -Path $nextDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Committed next snapshot"
             Remove-ExactFlatDirectory -Path $publishDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Committed publish snapshot"
             Remove-ExactFlatDirectory -Path $auditDirectory `
                 -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
                 -Label "Committed audit snapshot"
             Remove-ExactFlatDirectory -Path $failedDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Committed failed snapshot"
             Remove-TerminalTransaction -Root $transactionRoot `
                 -Manifest $manifestPath -State $statePath -TerminalState "CLEANUP_COMPLETE" `
@@ -1229,10 +1229,10 @@ try
             Assert-DeliveryMatches -Directory $OutputDirectory -Record $manifest.previous `
                 -Label "Aborted last-good delivery"
             Remove-ExactFlatDirectory -Path $nextDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Aborted terminal next snapshot"
             Remove-ExactFlatDirectory -Path $publishDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Aborted terminal publish snapshot"
             Remove-ExactFlatDirectory -Path $auditDirectory `
                 -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
@@ -1241,7 +1241,7 @@ try
                 -AllowedNames @(Get-DeliveryRecordNames -Record $manifest.previous) `
                 -Label "Aborted terminal rollback"
             Remove-ExactFlatDirectory -Path $failedDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Aborted terminal failed snapshot"
             Remove-TerminalTransaction -Root $transactionRoot `
                 -Manifest $manifestPath -State $statePath `
@@ -1296,8 +1296,8 @@ try
                             record = $manifest.new.mcp
                         },
                         [pscustomobject] @{
-                            name = [string] $manifest.new.iris.name
-                            record = $manifest.new.iris
+                            name = [string] $manifest.new.mod.name
+                            record = $manifest.new.mod
                         })
                     foreach ($file in $recoveryFiles)
                     {
@@ -1328,7 +1328,7 @@ try
                     Remove-ExactFlatDirectory -Path $nextDirectory `
                         -AllowedNames @(
                             [string] $manifest.new.mcp.name,
-                            [string] $manifest.new.iris.name) `
+                            [string] $manifest.new.mod.name) `
                         -Label "Retired first-publication audited snapshot"
                     for ($index = 0; $index -lt $recoveryFiles.Count; ++$index)
                     {
@@ -1365,16 +1365,16 @@ try
             if ($state -cne "COMMITTED")
             {
                 Remove-ExactFlatDirectory -Path $nextDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Aborted next snapshot"
                 Remove-ExactFlatDirectory -Path $publishDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Aborted publish snapshot"
                 Remove-ExactFlatDirectory -Path $auditDirectory `
                     -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
                     -Label "Aborted audit snapshot"
                 Remove-ExactFlatDirectory -Path $failedDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Aborted failed snapshot"
                 $cleanupOnly = $true
                 Remove-TerminalTransaction -Root $transactionRoot `
@@ -1393,16 +1393,16 @@ try
             else
             {
                 Remove-ExactFlatDirectory -Path $nextDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Recovered committed next snapshot"
                 Remove-ExactFlatDirectory -Path $publishDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Recovered committed publish snapshot"
                 Remove-ExactFlatDirectory -Path $auditDirectory `
                     -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
                     -Label "Recovered committed audit snapshot"
                 Remove-ExactFlatDirectory -Path $failedDirectory `
-                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                    -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                     -Label "Recovered committed failed snapshot"
                 Remove-TerminalTransaction -Root $transactionRoot `
                     -Manifest $manifestPath -State $statePath -TerminalState "CLEANUP_COMPLETE" `
@@ -1451,9 +1451,9 @@ try
                 throw "Transaction rollback exists without a manifest: $previousDirectory"
             }
             Remove-ExactFlatDirectory -Path $nextDirectory -AllowedNames @(
-                "vibris-mcp.exe", (Split-Path -Leaf $PatchedIrisJar)) -Label "Uncommitted next snapshot"
+                "vibris-mcp.exe", (Split-Path -Leaf $VibrisModJar)) -Label "Uncommitted next snapshot"
             Remove-ExactFlatDirectory -Path $publishDirectory -AllowedNames @(
-                "vibris-mcp.exe", (Split-Path -Leaf $PatchedIrisJar)) `
+                "vibris-mcp.exe", (Split-Path -Leaf $VibrisModJar)) `
                 -Label "Uncommitted publish snapshot"
             Remove-ExactFlatDirectory -Path $auditDirectory -AllowedNames @(
                 "vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
@@ -1508,10 +1508,10 @@ try
             length = [long] $receipt.artifacts.mcp.length
             sha256 = [string] $receipt.artifacts.mcp.sha256
         }
-        iris = [ordered] @{
-            name = Split-Path -Leaf $PatchedIrisJar
-            length = [long] $receipt.artifacts.iris.length
-            sha256 = [string] $receipt.artifacts.iris.sha256
+        mod = [ordered] @{
+            name = Split-Path -Leaf $VibrisModJar
+            length = [long] $receipt.artifacts.mod.length
+            sha256 = [string] $receipt.artifacts.mod.sha256
         }
     }
     $auditRecord = [ordered] @{
@@ -1554,8 +1554,8 @@ try
             target = Join-Path $nextDirectory "vibris-mcp.exe"
             record = $newRecord.mcp
         },
-        [pscustomobject] @{ source = $PatchedIrisJar; target = Join-Path $nextDirectory `
-            (Split-Path -Leaf $PatchedIrisJar); record = $newRecord.iris },
+        [pscustomobject] @{ source = $VibrisModJar; target = Join-Path $nextDirectory `
+            (Split-Path -Leaf $VibrisModJar); record = $newRecord.mod },
         [pscustomobject] @{ source = $auditSources.java; target = Join-Path $auditDirectory `
             "vibris-protocol-java.jar"; record = $auditRecord.java },
         [pscustomobject] @{ source = $auditSources.cpp; target = Join-Path $auditDirectory `
@@ -1608,7 +1608,7 @@ try
 
     $auditOutput = @(& (Join-Path $repoRoot "integration-tests\scripts\source-package-audit.ps1") `
         -McpExe (Join-Path $nextDirectory "vibris-mcp.exe") `
-        -PatchedIrisJar (Join-Path $nextDirectory ([string] $newRecord.iris.name)) `
+        -VibrisModJar (Join-Path $nextDirectory ([string] $newRecord.mod.name)) `
         -DeliveryDirectory $nextDirectory `
         -JavaDescriptor (Join-Path $auditDirectory "vibris-protocol-java.jar") `
         -CppDescriptorDump (Join-Path $auditDirectory "vibris-descriptor-dump.exe") `
@@ -1647,9 +1647,9 @@ try
     Assert-ReceiptArtifact -Record $receipt.artifacts.mcp -ExpectedPath $McpExe `
         -Label "MCP build provenance" -ProducedAfterUtc $phaseTimes.native.started `
         -ProducedBeforeUtc $phaseTimes.native.completed
-    Assert-ReceiptArtifact -Record $receipt.artifacts.iris -ExpectedPath $PatchedIrisJar `
-        -Label "Iris build provenance" -ProducedAfterUtc $phaseTimes.iris.started `
-        -ProducedBeforeUtc $phaseTimes.iris.completed
+    Assert-ReceiptArtifact -Record $receipt.artifacts.mod -ExpectedPath $VibrisModJar `
+        -Label "Vibris mod build provenance" -ProducedAfterUtc $phaseTimes.mod.started `
+        -ProducedBeforeUtc $phaseTimes.mod.completed
     Assert-ReceiptArtifact -Record $receipt.artifacts.java_descriptor `
         -ExpectedPath $auditSources.java -Label "Java descriptor provenance" `
         -ProducedAfterUtc $phaseTimes.protocol.started -ProducedBeforeUtc $phaseTimes.protocol.completed
@@ -1717,7 +1717,7 @@ try
 
     if ($TestPublishIdentityMismatch)
     {
-        $mismatchPath = Join-Path $OutputDirectory ([string] $newRecord.iris.name)
+        $mismatchPath = Join-Path $OutputDirectory ([string] $newRecord.mod.name)
         Remove-Item -LiteralPath $mismatchPath -Force
         [System.IO.File]::WriteAllText($mismatchPath, "INJECTED_IDENTITY_MISMATCH")
     }
@@ -1741,7 +1741,7 @@ try
     foreach ($handle in $immutableHandles) { $handle.Dispose() }
     $immutableHandles.Clear()
     Remove-ExactFlatDirectory -Path $nextDirectory `
-        -AllowedNames @([string] $newRecord.mcp.name, [string] $newRecord.iris.name) `
+        -AllowedNames @([string] $newRecord.mcp.name, [string] $newRecord.mod.name) `
         -Label "Retired audited next snapshot"
 
     foreach ($source in $publishSources)
@@ -1785,7 +1785,7 @@ try
             -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
             -Label "Retired audit snapshot"
         Remove-ExactFlatDirectory -Path $failedDirectory `
-            -AllowedNames @([string] $newRecord.mcp.name, [string] $newRecord.iris.name) `
+            -AllowedNames @([string] $newRecord.mcp.name, [string] $newRecord.mod.name) `
             -Label "Retired failed snapshot"
         Remove-TerminalTransaction -Root $transactionRoot `
             -Manifest $manifestPath -State $statePath -TerminalState "CLEANUP_COMPLETE" `
@@ -1799,7 +1799,7 @@ try
 
     Write-Output ($auditOutput | Where-Object { $_ -like "PASS *" })
     Write-Output ("PASS delivery_files=2 output=$OutputDirectory " +
-        "mcp_sha256=$($newRecord.mcp.sha256) iris_sha256=$($newRecord.iris.sha256) " +
+        "mcp_sha256=$($newRecord.mcp.sha256) mod_sha256=$($newRecord.mod.sha256) " +
         "target_sha256=$targetKey identity_bound=true hard_link_publish=true " +
         "cleanup_pending=$($cleanupPending.ToString().ToLowerInvariant())")
 }
@@ -1847,16 +1847,16 @@ catch
             }
 
             Remove-ExactFlatDirectory -Path $nextDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Failed next snapshot"
             Remove-ExactFlatDirectory -Path $publishDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Failed publish snapshot"
             Remove-ExactFlatDirectory -Path $auditDirectory `
                 -AllowedNames @("vibris-protocol-java.jar", "vibris-descriptor-dump.exe", "vibris_control.proto") `
                 -Label "Failed audit snapshot"
             Remove-ExactFlatDirectory -Path $failedDirectory `
-                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.iris.name) `
+                -AllowedNames @([string] $manifest.new.mcp.name, [string] $manifest.new.mod.name) `
                 -Label "Failed published snapshot"
             $cleanupOnly = $true
             Remove-TerminalTransaction -Root $transactionRoot `

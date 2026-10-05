@@ -31,6 +31,18 @@ import java.util.concurrent.ConcurrentLinkedDeque
 
 class ThreadBoundVibrisRuntimeAdapterTest {
     @Test
+    fun refreshesTheCatalogAfterWarmupBeforeDeferredPassCapture() {
+        val frames = RenderedFrameClock()
+        val adapter = ThreadBoundVibrisRuntimeAdapter(StubHost(hasResourceCatalog = true), frames)
+        assertEquals(ResourceCatalog.empty(), adapter.getResourceCatalog())
+        val waited = adapter.waitRenderedFrames(1, CancellationToken.none())
+        frames.renderedFrame()
+        assertEquals(1L, waited.toCompletableFuture().join())
+        assertEquals(RESOURCE_CATALOG, adapter.getResourceCatalog())
+        adapter.close()
+    }
+
+    @Test
     fun reportsPendingFrameWorkAndNotifiesOnActivityTransitions() {
         val frames = RenderedFrameClock()
         val activityStates = ArrayList<Boolean>()
@@ -833,7 +845,7 @@ class ThreadBoundVibrisRuntimeAdapterTest {
         private fun <T> unsupported(): T = throw UnsupportedOperationException()
     }
 
-    private class StubHost : VibrisRuntimeHost {
+    private class StubHost(private val hasResourceCatalog: Boolean = false) : VibrisRuntimeHost {
         override fun isClientThread(): Boolean = true
 
         override fun executeOnClient(task: Runnable) = task.run()
@@ -868,7 +880,8 @@ class ThreadBoundVibrisRuntimeAdapterTest {
 
         override fun endDeterministicSequence(cancellation: CancellationToken) = Unit
 
-        override fun resourceCatalog(frameId: Long): ResourceCatalog = unsupported()
+        override fun resourceCatalog(frameId: Long): ResourceCatalog =
+            if (hasResourceCatalog) RESOURCE_CATALOG else unsupported()
 
         override fun capture(
             plan: CapturePlan,

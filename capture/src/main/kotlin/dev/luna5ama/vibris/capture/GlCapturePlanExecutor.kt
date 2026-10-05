@@ -33,7 +33,7 @@ object GlCapturePlanExecutor {
             val metadata = when (target.resource.kind) {
                 ResourceCatalog.ResourceKind.FINAL_FRAMEBUFFER,
                 ResourceCatalog.ResourceKind.TEXTURE,
-                -> GlArtifactCapture.readTexture(glId, target.resource.mipLevel).use { readback ->
+                -> GlArtifactCapture.readTexture(glId, target.resource.mipLevel, target.resource.region).use { readback ->
                     for (spec in payloads) {
                         cancellation.throwIfCancellationRequested()
                         write(sink, spec.fileName) { output ->
@@ -138,6 +138,9 @@ object GlCapturePlanExecutor {
         metadata.componentBits,
         metadata.readbackFormat,
         metadata.readbackType,
+        metadata.region,
+        metadata.sourceWidth,
+        metadata.sourceHeight,
     )
 
     private fun writeMetadata(
@@ -147,6 +150,8 @@ object GlCapturePlanExecutor {
         yFlipped: Boolean,
     ) {
         val json = "{\"logical_name\":\"${escape(resource.logicalName)}\"" +
+            (resource.region?.let { ",\"region\":{\"x\":${it.x},\"y\":${it.y},\"width\":${it.width},\"height\":${it.height}}" } ?: "") +
+            ",\"source_width\":${resource.sourceWidth},\"source_height\":${resource.sourceHeight}" +
             ",\"kind\":\"${resource.kind}\"" +
             ",\"width\":${resource.width}" +
             ",\"height\":${resource.height}" +

@@ -9,7 +9,12 @@ import org.spongepowered.asm.mixin.Shadow;
 abstract class MixinCompositePass implements VibrisPassInfo {
 	@Shadow String name;
 	@Shadow ImmutableSet<Integer> flipsAfterPass;
+	@Shadow net.irisshaders.iris.gl.program.Program program;
+	@Shadow net.irisshaders.iris.gl.program.ComputeProgram[] computes;
 
 	@Override public String vibris$name() { return name; }
 	@Override public ImmutableSet<Integer> vibris$flipsAfterPass() { return flipsAfterPass; }
+	@Override public java.util.List<dev.vibris.api.ResourceCatalog.PassProgram> vibris$programs() {
+		return dev.vibris.mod.PassPrograms.describe(program, computes);
+	}
 }

@@ -38,6 +38,7 @@ void prepare_one(SourcePreparer& preparer, const SourceDelivery& delivery,
         provenance.set_requested_revision(source->at("requested_revision").get<std::string>());
         provenance.set_resolved_revision(source->at("resolved_revision").get<std::string>());
         provenance.set_snapshot_sha256(source->at("snapshot_sha256").get<std::string>());
+        provenance.set_patch_sha256(source->value("patch_sha256", std::string{}));
         control::SourceArchiveFormat archive_format;
         if (!control::SourceArchiveFormat_Parse(
                 source->at("archive_format").get<std::string>(), &archive_format) ||
@@ -63,6 +64,7 @@ void prepare_one(SourcePreparer& preparer, const SourceDelivery& delivery,
             origin->set_repository_id(source->at("origin_name").get<std::string>());
             origin->set_revision(provenance.resolved_revision());
             origin->set_worktree_root(source->at("worktree_root").get<std::string>());
+            origin->set_patch_sha256(provenance.patch_sha256());
         } else {
             auto* origin = provenance.mutable_origin()->mutable_workspace();
             origin->set_display_name(source->at("origin_name").get<std::string>());
@@ -73,7 +75,8 @@ void prepare_one(SourcePreparer& preparer, const SourceDelivery& delivery,
         prepared.emplace_back(delivery.deliver(snapshot, provenance));
         return;
     }
-    prepared.emplace_back(preparer.prepare_commit(source->at("revision").get<std::string>()));
+    prepared.emplace_back(preparer.prepare_commit(source->at("revision").get<std::string>(),
+        std::filesystem::path(source->value("patch", std::string{}))));
 }
 
 [[nodiscard]] SourceLimits server_limits(const control::ServerHello& server) {

@@ -106,6 +106,7 @@ function Invoke-TrustedGitText
     $start.FileName = $git
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     [void] $start.ArgumentList.Add("-c")
@@ -130,6 +131,7 @@ function Invoke-TrustedGitText
         if (-not $process.Start()) { throw "GIT_START_FAILURE: $Label could not start $git." }
         $processStarted = $true
         $startTimeUtc = $process.StartTime.ToUniversalTime()
+        $process.StandardInput.Close()
         $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
         $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderr)
         while (-not $process.WaitForExit(25))

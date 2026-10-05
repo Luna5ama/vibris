@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 namespace vibris::mcp {
 
@@ -18,8 +19,9 @@ inline constexpr std::string_view kArtifactLinkErrorCode = "ARTIFACT_LINK_ERROR"
 
 class StateError final : public std::runtime_error {
 public:
-    StateError(std::string_view code, std::string message, bool retryable = false)
-        : std::runtime_error(bound_message(std::move(message))), code_(code), retryable_(retryable) {
+    StateError(std::string_view code, std::string message, bool retryable = false,
+        nlohmann::json details = nlohmann::json::object())
+        : std::runtime_error(bound_message(std::move(message))), code_(code), retryable_(retryable), details_(std::move(details)) {
     }
 
     [[nodiscard]] std::string_view code() const noexcept {
@@ -29,6 +31,7 @@ public:
     [[nodiscard]] bool retryable() const noexcept {
         return retryable_;
     }
+    [[nodiscard]] const nlohmann::json& details() const noexcept { return details_; }
 
 private:
     static std::string bound_message(std::string message) {
@@ -41,6 +44,7 @@ private:
 
     std::string code_;
     bool retryable_;
+    nlohmann::json details_;
 };
 
 } // namespace vibris::mcp

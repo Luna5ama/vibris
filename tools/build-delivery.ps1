@@ -71,13 +71,13 @@ function Invoke-CheckedProcess
     }
 }
 
-function Get-IrisBuildFingerprint
+function Get-ModBuildFingerprint
 {
     param([Parameter(Mandatory)] [string] $Directory)
 
     $fingerprints = @{}
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return $fingerprints }
-    foreach ($file in Get-ChildItem -LiteralPath $Directory -File -Filter "iris-fabric-*-local.jar")
+    foreach ($file in Get-ChildItem -LiteralPath $Directory -File -Filter "vibris-fabric-*.jar")
     {
         $fingerprints[$file.FullName] = [pscustomobject] @{
             Length = $file.Length
@@ -88,14 +88,14 @@ function Get-IrisBuildFingerprint
     return $fingerprints
 }
 
-function Resolve-RebuiltIrisJar
+function Resolve-RebuiltModJar
 {
     param(
         [Parameter(Mandatory)] [string] $Directory,
         [Parameter(Mandatory)] [hashtable] $Before
     )
 
-    $candidates = @(Get-ChildItem -LiteralPath $Directory -File -Filter "iris-fabric-*-local.jar" |
+    $candidates = @(Get-ChildItem -LiteralPath $Directory -File -Filter "vibris-fabric-*.jar" |
         Where-Object {
             $previous = $Before[$_.FullName]
             $currentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
@@ -107,7 +107,7 @@ function Resolve-RebuiltIrisJar
     if ($candidates.Count -ne 1)
     {
         $paths = @($candidates | ForEach-Object FullName)
-        throw "Iris remapJar must produce exactly one fresh local JAR; resolved $($candidates.Count): " +
+        throw "Vibris remapJar must produce exactly one fresh mod JAR; resolved $($candidates.Count): " +
             [string]::Join(", ", $paths)
     }
     return $candidates[0].FullName
@@ -121,7 +121,7 @@ function Invoke-GitText
         [Parameter(Mandatory)] [string] $Label
     )
 
-    return Invoke-TrustedGitText -Root $Root -Arguments $Arguments -Label $Label
+    return Invoke-TrustedGitText -Root $Root -Arguments $Arguments -Label $Label -TimeoutSeconds 30
 }
 
 function Get-RepositorySourceState
@@ -134,7 +134,7 @@ function Get-RepositorySourceState
     $submodules = Invoke-GitText -Root $Root -Arguments @(
         "submodule", "status", "--recursive") -Label "Git submodule state"
     $untrackedText = Invoke-GitText -Root $Root -Arguments @(
-        "ls-files", "-z", "--others", "--exclude-standard") -Label "Git untracked source list"
+        "ls-files", "-z", "--others", "--exclude-standard", "--", ".", ":(exclude).vibris/**") -Label "Git untracked source list"
     $untracked = [System.Collections.Generic.List[object]]::new()
     foreach ($relative in @($untrackedText -split [char] 0 | Where-Object { $_.Length -ne 0 } |
         Sort-Object -CaseSensitive))
@@ -224,28 +224,26 @@ if ([string]::Equals($VibrisRoot, $IrisRoot, [System.StringComparison]::OrdinalI
 {
     throw "VibrisRoot and IrisRoot must be different repositories."
 }
-$compositeVibrisRoot = [System.IO.Path]::GetFullPath((Join-Path $IrisRoot "..\vibris"))
-if (-not [string]::Equals($compositeVibrisRoot, $VibrisRoot, [System.StringComparison]::OrdinalIgnoreCase))
+$compositeIrisRoot = [System.IO.Path]::GetFullPath((Join-Path $VibrisRoot "..\Iris"))
+if (-not [string]::Equals($compositeIrisRoot, $IrisRoot, [System.StringComparison]::OrdinalIgnoreCase))
 {
-    throw "Iris includeBuild('../vibris') does not resolve to the requested VibrisRoot: " +
-        "requested=$VibrisRoot composite=$compositeVibrisRoot"
+    throw "Vibris includeBuild('../Iris') does not resolve to the requested IrisRoot."
 }
-$irisSettings = Get-Content -Raw -LiteralPath (Join-Path $IrisRoot "settings.gradle.kts")
-if ($irisSettings -notmatch 'includeBuild\(["'']\.\./vibris["'']\)')
+$vibrisSettings = Get-Content -Raw -LiteralPath (Join-Path $VibrisRoot "settings.gradle.kts")
+if ($vibrisSettings -notmatch 'includeBuild\(["'']\.\./Iris["'']\)')
 {
-    throw "Iris settings.gradle.kts must includeBuild('../vibris') for this delivery."
+    throw "Vibris settings.gradle.kts must includeBuild('../Iris') for this delivery."
 }
 
 $cmake = (Get-Command cmake -CommandType Application -ErrorAction Stop).Source
 $vibrisGradle = Join-Path $VibrisRoot "gradlew.bat"
-$irisGradle = Join-Path $IrisRoot "gradlew.bat"
 $nativeBuildRoot = Join-Path $VibrisRoot "mcp\out\build"
 $releaseRoot = Join-Path $nativeBuildRoot "Release"
 $releaseMcp = Join-Path $releaseRoot "vibris-mcp.exe"
 $descriptorDump = Join-Path $releaseRoot "vibris-descriptor-dump.exe"
 $protocolJar = Join-Path $VibrisRoot "protocol-java\build\libs\vibris-protocol-java.jar"
 $proto = Join-Path $VibrisRoot "proto\vibris_control.proto"
-$irisLibs = Join-Path $IrisRoot "build\libs"
+$modLibs = Join-Path $VibrisRoot "mod-fabric\build\libs"
 $packageScript = Join-Path $VibrisRoot "tools\package-delivery.ps1"
 $descriptorProbe = Join-Path $VibrisRoot "integration-tests\scripts\protocol-descriptor-smoke.ps1"
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $VibrisRoot "build\delivery" }
@@ -321,14 +319,14 @@ try
 
     & $descriptorProbe -Proto $proto -JavaJar $protocolJar -CppDump $descriptorDump
 
-    $beforeIris = Get-IrisBuildFingerprint -Directory $irisLibs
-    $irisBuildStarted = [datetime]::UtcNow
-    Invoke-CheckedProcess -FilePath $irisGradle -Arguments @(
-        "--no-daemon", "--no-build-cache", "--rerun-tasks", ":fabric:remapJar") `
-        -WorkingDirectory $IrisRoot -Label "patched Iris remapJar through composite build"
-    $patchedIrisJar = Resolve-RebuiltIrisJar -Directory $irisLibs -Before $beforeIris
+    $beforeMod = Get-ModBuildFingerprint -Directory $modLibs
+    $modBuildStarted = [datetime]::UtcNow
+    Invoke-CheckedProcess -FilePath $vibrisGradle -Arguments @(
+        "--no-daemon", "--no-build-cache", "--rerun-tasks", ":vibris-mod-fabric:remapJar") `
+        -WorkingDirectory $VibrisRoot -Label "independent Vibris Fabric mod remapJar"
+    $vibrisModJar = Resolve-RebuiltModJar -Directory $modLibs -Before $beforeMod
 
-    $irisBuildCompleted = [datetime]::UtcNow
+    $modBuildCompleted = [datetime]::UtcNow
     $protocolBuildCompleted = [datetime]::UtcNow
     $vibrisSourceAfter = Get-RepositorySourceState -Root $VibrisRoot
     $irisSourceAfter = Get-RepositorySourceState -Root $IrisRoot
@@ -378,9 +376,9 @@ try
                 started_utc = $protocolBuildStarted.ToString("o")
                 completed_utc = $protocolBuildCompleted.ToString("o")
             }
-            iris = [ordered] @{
-                started_utc = $irisBuildStarted.ToString("o")
-                completed_utc = $irisBuildCompleted.ToString("o")
+            mod = [ordered] @{
+                started_utc = $modBuildStarted.ToString("o")
+                completed_utc = $modBuildCompleted.ToString("o")
             }
         }
         scripts = [ordered] @{
@@ -390,7 +388,7 @@ try
         }
         artifacts = [ordered] @{
             mcp = Get-BuildArtifactRecord -Path $releaseMcp
-            iris = Get-BuildArtifactRecord -Path $patchedIrisJar
+            mod = Get-BuildArtifactRecord -Path $vibrisModJar
             java_descriptor = Get-BuildArtifactRecord -Path $protocolJar
             cpp_descriptor = Get-BuildArtifactRecord -Path $descriptorDump
             proto = Get-BuildArtifactRecord -Path $proto
@@ -398,7 +396,7 @@ try
     }
     Write-AtomicJson -Path $receiptPath -Value $receipt
 
-    & $packageScript -McpExe $releaseMcp -PatchedIrisJar $patchedIrisJar `
+    & $packageScript -McpExe $releaseMcp -VibrisModJar $vibrisModJar `
         -BuildReceipt $receiptPath -OutputDirectory $OutputDirectory
 }
 finally

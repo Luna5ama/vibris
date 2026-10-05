@@ -932,7 +932,7 @@ void typed_preset_discovery_and_request_scene() {
 
 void tool_metadata_is_request_scoped() {
     const vibris::mcp::ToolRegistry tools;
-    require(tools.definitions().size() == 10, "Tool registry did not expose exactly ten v2 tools.");
+    require(tools.definitions().size() == 12, "Tool registry did not expose exactly twelve tools.");
     for (const auto& definition : tools.definitions()) {
         const auto name = definition.at("name").get<std::string>();
         const auto description = definition.at("description").get<std::string>();

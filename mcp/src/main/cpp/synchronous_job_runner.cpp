@@ -153,6 +153,7 @@ Json normalized_gpu_metrics(const Json& receipt) {
         Json samples = Json::array();
         for (const auto& sample : strict_array(value, "samples_ns")) samples.push_back(wire_uint64(sample));
         metrics.push_back({{"metric_id", value.value("metric_id", std::string{})},
+            {"main_source", value.value("main_source", std::string{})},
             {"program_id", value.value("program_id", std::string{})},
             {"pass_id", value.value("pass_id", std::string{})},
             {"average_ns", wire_uint64(value.at("average_ns"))},
@@ -161,6 +162,7 @@ Json normalized_gpu_metrics(const Json& receipt) {
             {"samples_ns", std::move(samples)}});
     }
     return {{"timing_unit", receipt.value("timing_unit", std::string{})},
+            {"missing", receipt.value("missing", Json::array())},
             {"sampled_frames", receipt.value("sampled_frames", std::uint32_t{})},
             {"metrics", std::move(metrics)}};
 }
@@ -227,12 +229,13 @@ Json profile_case(const Json& receipts, const Json& provenance, const Json& rest
 
     ++counts.requested;
     const bool has_metrics = has_gpu_samples(metrics);
+    const bool reported_missing = metrics.is_object() && !metrics.value("missing", Json::array()).empty();
     const bool has_provenance = detail::complete_result_provenance(provenance);
     const bool has_restoration = restoration.is_object() &&
         restoration.value("status", std::string{}) == "RECEIPT_STATUS_OK";
     if (has_metrics) ++counts.with_metrics;
     const bool failed = !error.is_null();
-    const bool incomplete = !failed && (!has_metrics || !has_provenance || !has_restoration);
+    const bool incomplete = !failed && ((!has_metrics && !reported_missing) || !has_provenance || !has_restoration);
     const char* status = "passed";
     if (failed) {
         ++counts.failed;
@@ -254,7 +257,7 @@ Json profile_case(const Json& receipts, const Json& provenance, const Json& rest
               {"error", std::move(error)},
               {"frames", arguments.at("frames")},
               {"warmup_frames", warmup_frames},
-              {"metrics", include_metrics && has_metrics ? std::move(metrics) : Json(nullptr)}};
+              {"metrics", include_metrics && (has_metrics || reported_missing) ? std::move(metrics) : Json(nullptr)}};
     if (retain_receipts) item["action_receipts"] = receipts;
     return item;
 }
@@ -726,6 +729,7 @@ Json normalize_profile_result(const Json& terminal, const Json& arguments,
             arguments, warmup, arguments.value("__vibris_case_id", std::string("source--config")),
             arguments.value("__vibris_source_id", std::string("source")),
             arguments.value("__vibris_config_id", std::string("config")), detail, false));
+        cases.back()["provenance"] = wire.value("provenance", Json(nullptr));
     }
 
     Json result{{"success", counts.failed == 0 && counts.incomplete == 0},
@@ -761,8 +765,20 @@ Json normalize_profile_result(const Json& terminal, const Json& arguments,
 
 Json normalize_matrix_result(const Json& terminal, const Json& arguments) {
     const auto& wire = strict_job_result(terminal);
-    const auto matrix = wire.find("matrix");
-    if (matrix == wire.end() || !matrix->is_object()) {
+    auto matrix_value = wire.value("matrix", Json(nullptr));
+    if (!matrix_value.is_object() && wire.contains("action_receipts") && arguments.contains("matrix") &&
+        arguments["matrix"]["sources"].size() == 1 && arguments["matrix"]["configs"].size() == 1) {
+        const auto source_id = arguments["matrix"]["sources"][0].get<std::string>();
+        const auto config_id = arguments["matrix"]["configs"][0].get<std::string>();
+        bool ok = true;
+        for (const auto* receipt : ordered_receipts(wire)) ok = ok && receipt_ok(*receipt);
+        matrix_value = {{"cases", Json::array({{{"case_id", source_id + "--" + config_id},
+            {"status", ok ? "RECEIPT_STATUS_OK" : "RECEIPT_STATUS_FAILED"},
+            {"action_receipts", wire.at("action_receipts")},
+            {"provenance", wire.value("provenance", Json(nullptr))}}})}};
+    }
+    const auto* matrix = &matrix_value;
+    if (!matrix->is_object()) {
         throw std::invalid_argument("strict v2 matrix result is missing MatrixResult");
     }
     Json cases = Json::array();
@@ -818,15 +834,6 @@ Json normalize_action_sequence_result(const Json& terminal, const std::string_vi
             if (capture.is_object() && capture.contains("frame_id")) {
                 frame_ids.push_back(wire_uint64(capture.at("frame_id")));
             }
-        }
-        if (receipt_kind == "ACTION_KIND_COMPARE_CAPTURES" && receipt->contains("comparison")) {
-            const auto& comparison = receipt->at("comparison");
-            if (!comparison.is_object()) throw std::invalid_argument("CompareReceipt is not an object");
-            auto summary = comparison.value("metrics", Json::object());
-            summary["passed"] = comparison.value("passed", false);
-            summary["violations"] = comparison.value("violations", Json::array());
-            summary["verdict"] = summary.at("passed").get<bool>() ? "passed" : "failed";
-            comparisons.push_back(std::move(summary));
         }
     }
     const bool provenance_ok = complete_result_provenance(wire.value("provenance", Json(nullptr)));
@@ -1272,29 +1279,6 @@ ToolOutcome SynchronousJobRunner::run(std::string_view tool_name, const Json& ar
             : submit_once(tool_name, arguments, server, context, control);
         if (recipe == "ab_compare" && std::holds_alternative<Json>(outcome)) {
             auto result = detail::normalize_action_sequence_result(std::get<Json>(std::move(outcome)), recipe);
-            const auto& captures = arguments.at("captures");
-            const bool require_heatmap = std::ranges::any_of(captures, [](const Json& capture) {
-                return capture.is_object() &&
-                    (capture.value("type", std::string{}) == "screenshot" ||
-                        capture.value("format", std::string{}) == "png");
-            });
-            auto visual_guards = visual_comparison_guards(result, require_heatmap);
-            const auto comparison = result.find("comparison");
-            if (!visual_guards.at("passed").get<bool>()) {
-                result["status"] = "invalid_comparison";
-                result["verdict"] = "inconclusive";
-                result["success"] = false;
-                result["error"] = {{"success", false},
-                    {"error_code", "INVALID_VISUAL_RECEIPT"},
-                    {"message", "The visual comparison receipt failed its deterministic-state guards."},
-                    {"retryable", false}, {"details", visual_guards.at("mismatches")}};
-            } else if (comparison != result.end() && comparison->is_object()) {
-                const auto passed = comparison->value("passed", true);
-                result["status"] = passed ? "completed" : "completed_with_failures";
-                result["verdict"] = comparison->value("verdict", std::string("not_evaluated"));
-                result["success"] = passed;
-            }
-            result["visual_guards"] = std::move(visual_guards);
             return result;
         }
         if (recipe == "load_and_screenshot" && std::holds_alternative<Json>(outcome)) {

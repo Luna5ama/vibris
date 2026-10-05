@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "tool_argument_policy.hpp"
+#include "result_mapper.hpp"
 
 namespace vibris::mcp {
 namespace {
@@ -48,7 +49,10 @@ Json scoped(Json schema, bool scene_required) {
 Json source_schema() {
     return one_of({
         closed_object({{"kind", enum_string({"workspace"})}}, {"kind"}),
-        closed_object({{"kind", enum_string({"commit"})}, {"revision", {{"type", "string"}, {"minLength", 1}}}},
+        closed_object({{"kind", enum_string({"commit"})}, {"revision", {{"type", "string"}, {"minLength", 1}}},
+            {"patch", {{"type", "string"}, {"minLength", 1}, {"description",
+                "Patch path relative to worktree_root or absolute. Use git diff --binary for binary changes. "
+                "git stash create produces a revision for tracked uncommitted changes, excluding untracked files."}}}},
                       {"kind", "revision"}),
     });
 }
@@ -58,7 +62,8 @@ Json named_source_schema() {
                        {"kind", enum_string({"workspace"})}}, {"id", "kind"}),
         closed_object({{"id", {{"type", "string"}, {"minLength", 1}}},
                        {"kind", enum_string({"commit"})},
-                       {"revision", {{"type", "string"}, {"minLength", 1}}}},
+                       {"revision", {{"type", "string"}, {"minLength", 1}}},
+                       {"patch", {{"type", "string"}, {"minLength", 1}}}},
                       {"id", "kind", "revision"}),
     });
 }
@@ -107,6 +112,19 @@ Json visual_thresholds_schema() {
         {"max_threshold_pixel_ratio", ratio},
         {"min_ssim", ssim},
     });
+}
+
+Json compare_schema() {
+    const auto path = closed_object({{"path", {{"type", "string"}, {"minLength", 1}}}}, {"path"});
+    auto thresholds = visual_thresholds_schema();
+    for (auto& [key, field] : thresholds["properties"].items()) if (key != "min_ssim") field.erase("maximum");
+    thresholds["properties"]["max_relative_mse"] = {{"type", "number"}, {"minimum", 0}};
+    return scoped(closed_object({{"a", path}, {"b", path}, {"mode", enum_string({"difference", "statistical"})},
+        {"heatmap", {{"type", "boolean"}}}, {"thresholds", thresholds},
+        {"channels", {{"type", "array"}, {"items", bounded_integer(0, 3)}, {"minItems", 1}, {"maxItems", 4}, {"uniqueItems", true}}},
+        {"region", closed_object({{"x", bounded_integer(0, INT32_MAX)}, {"y", bounded_integer(0, INT32_MAX)},
+            {"width", bounded_integer(1, INT32_MAX)}, {"height", bounded_integer(1, INT32_MAX)}}, {"x", "y", "width", "height"})}},
+        {"a", "b"}), false);
 }
 
 Json nsight_query_schema() {
@@ -194,20 +212,25 @@ Json recipe_schema() {
                                  "capture_debug_bundle", "ab_compare", "recover_runtime"})},
         {"preset_id", {{"type", "string"}, {"minLength", 1}}},
         {"source", source_schema()},
-        {"baseline", source_schema()},
+        {"baseline", one_of({source_schema(), closed_object({
+            {"source_id", {{"type", "string"}, {"minLength", 1}}},
+            {"config_id", {{"type", "string"}, {"minLength", 1}}}}, {"source_id", "config_id"})})},
         {"candidate", source_schema()},
         {"a", source_variant_schema()},
         {"b", source_variant_schema()},
         {"sources", named_sources_schema()},
+        {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
+        {"delta_statistic", enum_string({"p50", "avg"})},
         {"configs", named_configs_schema()},
         {"matrix", matrix_axes_schema()},
         {"config", config},
         {"baseline_config", config},
         {"warmup_frames", frames},
         {"frames", metric_frames},
-        {"rounds", bounded_integer(2, 20)},
+        {"rounds", bounded_integer(1, 20)},
         {"control_rounds", bounded_integer(2, 20)},
-        {"order", enum_string({"abba", "abab", "randomized"})},
+        {"order", enum_string({"abba", "abab", "randomized", "palindrome", "sequential"})},
         {"random_seed", bounded_integer(0, std::numeric_limits<std::uint32_t>::max())},
         {"statistic", enum_string({"avg", "p5", "p50", "p95"})},
         {"result_detail", result_detail},
@@ -239,6 +262,10 @@ Json action_schema() {
                                                   {"layer", bounded_integer(0, 4095)}},
                                                  {"logical_name", "view"});
     const auto buffer_selector = closed_object({{"logical_name", resource_name}}, {"logical_name"});
+    Json pass_id = resource_name;
+    pass_id["description"] =
+        "Optional canonical stage/program pass ID from vibris_list_resources. When set, captures the resource right "
+        "after that pass completes; when omitted, captures the final frame output.";
     const auto frames = bounded_integer(1, 10'000);
     const auto empty_action = [](const char* type) {
         return closed_object({{"type", enum_string({type})}}, {"type"});
@@ -261,25 +288,31 @@ Json action_schema() {
                        {"after_frames", bounded_integer(0, std::numeric_limits<std::int32_t>::max())}},
                       {"type"}),
         closed_object({{"type", enum_string({"dump_texture"})},
+                       {"region", closed_object({{"x", bounded_integer(0, INT32_MAX)}, {"y", bounded_integer(0, INT32_MAX)},
+                           {"width", bounded_integer(1, INT32_MAX)}, {"height", bounded_integer(1, INT32_MAX)}},
+                           {"x", "y", "width", "height"})},
+                       {"pass_id", pass_id},
                        {"resource", texture_selector},
                        {"format", enum_string({"bin", "png"})},
                        {"artifact_name", artifact_name}},
                       {"type", "resource", "format", "artifact_name"}),
         closed_object({{"type", enum_string({"dump_buffer"})},
+                       {"pass_id", pass_id},
                        {"resource", buffer_selector},
                        {"artifact_name", artifact_name}},
                       {"type", "resource", "artifact_name"}),
-        closed_object({{"type", enum_string({"dump_texture_after_pass"})},
-                       {"pass_id", resource_name},
-                       {"resource", texture_selector},
-                       {"format", enum_string({"bin", "png"})},
-                       {"artifact_name", artifact_name}},
-                      {"type", "pass_id", "resource", "format", "artifact_name"}),
-        closed_object({{"type", enum_string({"dump_buffer_after_pass"})},
-                       {"pass_id", resource_name},
-                       {"resource", buffer_selector},
-                       {"artifact_name", artifact_name}},
-                      {"type", "pass_id", "resource", "artifact_name"}),
+        closed_object({{"type", enum_string({"texture_stats"})}, {"resource", texture_selector}, {"pass_id", pass_id},
+            {"region", closed_object({{"x", bounded_integer(0, INT32_MAX)}, {"y", bounded_integer(0, INT32_MAX)},
+                {"width", bounded_integer(1, INT32_MAX)}, {"height", bounded_integer(1, INT32_MAX)}},
+                {"x", "y", "width", "height"})}}, {"type", "resource"}),
+        closed_object({{"type", enum_string({"accumulate_texture"})}, {"resource", texture_selector}, {"pass_id", pass_id},
+            {"region", closed_object({{"x", bounded_integer(0, INT32_MAX)}, {"y", bounded_integer(0, INT32_MAX)},
+                {"width", bounded_integer(1, INT32_MAX)}, {"height", bounded_integer(1, INT32_MAX)}},
+                {"x", "y", "width", "height"})},
+            {"frames", bounded_integer(2, 65535)}, {"batches", bounded_integer(2, 64)},
+            {"luma_weights", {{"type", "array"}, {"minItems", 3}, {"maxItems", 3}, {"items", {{"type", "number"}}}}},
+            {"outputs", enum_array({"mean", "variance", "stderr", "flicker", "nonfinite"}, 5)},
+            {"artifact_name", artifact_name}}, {"type", "resource", "frames", "artifact_name"}),
         empty_action("get_capture_status"),
         load_shader,
         closed_object({
@@ -377,7 +410,9 @@ Json build_definitions() {
                    scoped(closed_object({{"preset_id", {{"type", "string"}, {"minLength", 1}}},
                                          {"tags", string_array(32)}}), false), true),
         definition("vibris_list_resources",
-                   "List the typed logical resource and named-pass catalog for the explicit Git worktree.",
+                   "List the typed logical resource and named-pass catalog for the explicit Git worktree. "
+                   "Resource layout_ref selects resource_layouts; texture_layout_defaults supplies omitted unit dimensions. "
+                   "catalog_context identifies the loaded source, settings and shader generation.",
                    scoped(closed_object({
                        {"kinds", enum_array({"final_framebuffer", "texture", "buffer", "patched_shaders"}, 4)},
                        {"logical_name", {{"type", "string"}, {"minLength", 1}}},
@@ -420,6 +455,9 @@ Json build_definitions() {
                    "success and restore the previous state on error; an "
                    "explicit false/false load may establish the first verified Core-owned runtime snapshot.",
                    scoped(closed_object({{"sources", named_sources_schema()},
+                                         {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}},
+                                             {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
+                                         {"preset_id", {{"type", "string"}, {"minLength", 1}}},
                                          {"configs", named_configs_schema()},
                                          {"execution", enum_string({"sync", "async"})},
                                          {"restore_state", restore_policy_schema()},
@@ -438,7 +476,7 @@ Json build_definitions() {
                                          {"matrix", matrix_axes_schema()},
                                          {"execution", enum_string({"sync", "async"})},
                                          {"actions", {{"type", "array"}, {"items", action_schema()}, {"maxItems", 64}}}},
-                                        {"sources", "configs", "matrix", "actions"}), true), false),
+                                        {"sources", "configs", "matrix", "actions"}), false), false),
         definition("vibris_job",
                    "Wait for, inspect, retrieve, cancel or resume one durable v2 job for the explicit Git worktree. "
                    "For an async job, call operation=wait once with timeout_ms=300000; if that bounded wait times out, "
@@ -456,12 +494,28 @@ Json build_definitions() {
         definition("vibris_artifacts",
                    "List, inspect, measure capacity for, or delete managed v2 artifact manifests in the explicit Git worktree.",
                    scoped(closed_object({
-                       {"operation", enum_string({"list", "get", "capacity", "delete"})},
+                       {"operation", enum_string({"list", "get", "capacity", "delete", "prune"})},
+                       {"older_than_ms", bounded_integer(0, std::numeric_limits<std::uint64_t>::max())},
+                       {"job_ids", string_array(512)},
+                       {"recipe", {{"type", "string"}, {"minLength", 1}}},
+                       {"keep_latest", bounded_integer(0, 100'000)},
+                       {"dry_run", {{"type", "boolean"}}},
                        {"manifest_id", {{"type", "string"}, {"minLength", 1}}},
                        {"expected_manifest_sha256", {{"type", "string"}, {"minLength", 64}, {"maxLength", 64}}},
                        {"job_id", {{"type", "string"}, {"minLength", 1}}},
                        {"request_id", {{"type", "string"}, {"minLength", 1}}},
                    }, {"operation"}), false), false),
+        definition("vibris_compare", "Compare local PNG or typed BIN captures for the explicit Git worktree inside worktree/.vibris. "
+            "SSIM uses an 11x11 Gaussian luminance window (sigma 1.5), with reflected boundaries. "
+            "Statistical mode assumes independent runs and accepts accumulate .mean.bin inputs. "
+            "relMSE is squared difference divided by baseline energy. No thresholds means not_evaluated.",
+            compare_schema(), true),
+        definition("vibris_preview_presets", "Render and cache scene thumbnails for the explicit Git worktree by preset SHA, tile width and Vibris version. "
+            "Uses a frozen workspace source, default settings and restored runtime state. Returns 6x4 contact sheets. "
+            "Async execution uses the durable job workflow; wait once with vibris_job.",
+            scoped(closed_object({{"preset_ids", string_array(512)}, {"tags", string_array(64)},
+                {"refresh", {{"type", "boolean"}}}, {"tile_width", bounded_integer(64, 1024)},
+                {"execution", enum_string({"sync", "async"})}}, {}), false), false),
     });
     return definitions;
 }
@@ -476,12 +530,131 @@ bool has_type(const Json& value, std::string_view type) {
     return false;
 }
 
+std::optional<std::string> discriminator(const Json& branches) {
+    for (const auto* key : {"type", "kind", "mode", "operation"}) {
+        std::set<std::string> values;
+        bool usable = true;
+        for (const auto& branch : branches) {
+            if (!branch.contains("properties") || !branch["properties"].contains(key)) {
+                usable = false;
+                break;
+            }
+            const auto& field = branch["properties"][key];
+            if (!field.contains("enum") || field["enum"].size() != 1 ||
+                !field["enum"][0].is_string() ||
+                !values.insert(field["enum"][0].get<std::string>()).second) {
+                usable = false;
+                break;
+            }
+        }
+        if (usable) return key;
+    }
+    return std::nullopt;
+}
+
+Json merge_public_fields(Json left, const Json& right) {
+    if (left.contains("properties") && right.contains("properties")) {
+        for (const auto& [key, value] : right["properties"].items()) {
+            if (left["properties"].contains(key)) left["properties"][key] = merge_public_fields(left["properties"][key], value);
+            else left["properties"][key] = value;
+        }
+        Json required = Json::array();
+        const auto other_required = right.value("required", Json::array());
+        for (const auto& key : left.value("required", Json::array()))
+            if (std::find(other_required.begin(), other_required.end(), key) != other_required.end()) required.push_back(key);
+        left["required"] = std::move(required);
+    }
+    if (left.contains("items") && right.contains("items")) left["items"] = merge_public_fields(left["items"], right["items"]);
+    if (left.contains("enum") && right.contains("enum")) {
+        for (const auto& option : right["enum"])
+            if (std::find(left["enum"].begin(), left["enum"].end(), option) == left["enum"].end()) left["enum"].push_back(option);
+    } else left.erase("enum");
+    for (const auto* bound : {"minimum", "minItems", "minLength", "maximum", "maxItems", "maxLength"}) {
+        if (!left.contains(bound) || !right.contains(bound)) left.erase(bound);
+        else if (std::string_view(bound).starts_with("min")) left[bound] = std::min(left[bound], right[bound]);
+        else left[bound] = std::max(left[bound], right[bound]);
+    }
+    if (left.contains("type") && right.contains("type") && left["type"] != right["type"]) {
+        auto types = left["type"].is_array() ? left["type"] : Json::array({left["type"]});
+        const auto others = right["type"].is_array() ? right["type"] : Json::array({right["type"]});
+        for (const auto& type : others) if (std::find(types.begin(), types.end(), type) == types.end()) types.push_back(type);
+        left["type"] = std::move(types);
+    }
+    return left;
+}
+
+Json public_schema(Json schema) {
+    if (schema.contains("oneOf")) {
+        auto branches = schema.at("oneOf");
+        for (auto& branch : branches) branch = public_schema(std::move(branch));
+        const auto tag = discriminator(branches);
+        Json properties = Json::object();
+        Json required = branches.front().value("required", Json::array());
+        for (const auto& branch : branches) {
+            const auto branch_required = branch.value("required", Json::array());
+            Json intersection = Json::array();
+            for (const auto& key : required) {
+                if (std::find(branch_required.begin(), branch_required.end(), key) != branch_required.end())
+                    intersection.push_back(key);
+            }
+            required = std::move(intersection);
+            for (const auto& [key, field] : branch.at("properties").items()) {
+                auto flattened = public_schema(field);
+                if (!properties.contains(key)) properties[key] = flattened;
+                else properties[key] = merge_public_fields(std::move(properties[key]), flattened);
+            }
+        }
+        for (auto& [key, field] : properties.items()) {
+            std::string applies;
+            for (const auto& branch : branches) {
+                if (!branch.at("properties").contains(key)) continue;
+                if (!applies.empty()) applies += ", ";
+                applies += tag ? branch["properties"][*tag]["enum"][0].get<std::string>()
+                               : branch.value("required", Json::array()).dump();
+            }
+            const auto prior = field.value("description", std::string{});
+            field["description"] = prior + (prior.empty() ? "" : " ") + "Applies to: " + applies + ".";
+        }
+        schema.erase("oneOf");
+        schema["type"] = "object";
+        schema["properties"] = std::move(properties);
+        schema["additionalProperties"] = false;
+        schema["required"] = std::move(required);
+        if (!tag) schema["description"] = "Exactly one supported form is required; branch-specific fields are mutually exclusive.";
+    }
+    if (schema.contains("properties")) {
+        for (auto& [key, field] : schema["properties"].items()) field = public_schema(std::move(field));
+    }
+    if (schema.contains("items")) schema["items"] = public_schema(std::move(schema["items"]));
+    return schema;
+}
+
 std::optional<std::string> validate(const Json& value, const Json& schema, const std::string& path) {
     if (schema.contains("oneOf")) {
-        const auto matches = std::count_if(schema["oneOf"].begin(), schema["oneOf"].end(), [&](const Json& candidate) {
-            return !validate(value, candidate, path).has_value();
-        });
-        if (matches != 1) return path + " must match exactly one supported form";
+        const auto& branches = schema["oneOf"];
+        if (const auto tag = discriminator(branches)) {
+            Json allowed = Json::array();
+            for (const auto& branch : branches) {
+                const auto& option = branch["properties"][*tag]["enum"][0];
+                allowed.push_back(option);
+                if (value.is_object() && value.contains(*tag) && value[*tag] == option)
+                    return validate(value, branch, path);
+            }
+            return path + "." + *tag + " must be one of " + allowed.dump();
+        }
+        std::size_t matches = 0;
+        std::optional<std::string> deepest;
+        std::size_t deepest_depth = 0;
+        for (const auto& branch : branches) {
+            const auto error = validate(value, branch, path);
+            if (!error) { ++matches; continue; }
+            const auto field_path = error->substr(0, error->find(' '));
+            const auto depth = static_cast<std::size_t>(std::count(field_path.begin(), field_path.end(), '.') +
+                std::count(field_path.begin(), field_path.end(), '['));
+            if (!deepest || depth > deepest_depth) { deepest = error; deepest_depth = depth; }
+        }
+        if (matches == 0) return deepest;
+        if (matches != 1) return path + " matches multiple supported forms; specify exactly one";
     }
     if (schema.contains("type") && !has_type(value, schema["type"].get<std::string>())) {
         return path + " has the wrong type";
@@ -578,10 +751,13 @@ std::optional<std::string> validate_canonical_resource_references(const Json& va
             }
         }
         const auto type = value.value("type", std::string{});
-        if ((type == "dump_texture_after_pass" || type == "dump_buffer_after_pass") &&
+        if ((type == "dump_texture" || type == "dump_buffer" || type == "texture_stats" || type == "accumulate_texture") && value.contains("pass_id") &&
             !canonical_pass_id(value.at("pass_id").get_ref<const std::string&>())) {
             return path + ".pass_id must use canonical stage/program form";
         }
+        if (type == "accumulate_texture" && value.contains("frames") &&
+            value.at("frames").get<int>() < 2 * value.value("batches", 16))
+            return path + ".frames must be at least twice batches (default 16)";
         for (const auto& [key, item] : value.items()) {
             if (key == "textures" && item.is_array()) {
                 for (std::size_t index = 0; index < item.size(); ++index) {
@@ -606,6 +782,8 @@ std::optional<std::string> validate_canonical_resource_references(const Json& va
 }
 
 std::optional<std::string> validate_operation_shape(const std::string_view name, const Json& arguments) {
+    if (name == "vibris_preview_presets" && arguments.contains("preset_ids") && arguments.contains("tags"))
+        return "arguments.preset_ids and arguments.tags are mutually exclusive";
     const auto require = [&](std::initializer_list<const char*> fields) -> std::optional<std::string> {
         for (const auto* field : fields) {
             if (!arguments.contains(field)) return "arguments." + std::string(field) + " is required";
@@ -623,7 +801,10 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
             }
             return std::nullopt;
         }
-        if (!arguments.contains("preset_id")) return "arguments.preset_id is required";
+        if (!arguments.contains("preset_id") &&
+            !(recipe == "profile_matrix" && arguments.contains("presets"))) return "arguments.preset_id is required";
+        if (arguments.contains("presets") && (recipe != "profile_matrix" || arguments.contains("preset_id")))
+            return "arguments.presets is only allowed for profile_matrix and is exclusive with preset_id";
         if (recipe == "profile") return require({"frames"});
         if (recipe == "compile_validate") {
             if (arguments.contains("restore_state")) {
@@ -656,7 +837,30 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
             if (arguments.contains("restore_state")) {
                 return "arguments.restore_state is not allowed for always-restored workloads";
             }
-            if (recipe == "profile_matrix") return require({"sources", "configs", "matrix", "frames"});
+            if (recipe == "profile_matrix") {
+                if (arguments.value("rounds", 1) > 10) return "arguments.rounds must be at most 10 for profile_matrix";
+                const auto order = arguments.value("order", std::string("palindrome"));
+                if (order != "palindrome" && order != "sequential" && order != "randomized")
+                    return "arguments.order must be palindrome, sequential or randomized for profile_matrix";
+                if (arguments.contains("baseline") && (!arguments["baseline"].contains("source_id") ||
+                    !arguments["baseline"].contains("config_id"))) return "arguments.baseline requires source_id and config_id";
+                if (const auto missing = require({"sources", "configs", "matrix", "frames"})) return missing;
+                const auto count = arguments["matrix"]["sources"].size() * arguments["matrix"]["configs"].size() *
+                    arguments.value("rounds", 1) * (arguments.contains("presets") ? arguments["presets"].size() : 1) *
+                    (order == "palindrome" ? 2 : 1);
+                if (count > 512) return "arguments expands to more than 512 experiment steps";
+                if (arguments.contains("baseline")) {
+                    for (const auto& [field, axis] : {std::pair{"source_id", "sources"}, std::pair{"config_id", "configs"}}) {
+                        const auto& values = arguments["matrix"][axis];
+                        if (std::find(values.begin(), values.end(), arguments["baseline"][field]) == values.end())
+                            return "arguments.baseline." + std::string(field) + " must be selected in matrix";
+                    }
+                }
+                return std::nullopt;
+            }
+            if (arguments.value("rounds", 2) < 2) return "arguments.rounds must be at least 2 for benchmark_ab";
+            if (arguments.contains("order") && arguments["order"] != "abba" && arguments["order"] != "abab" &&
+                arguments["order"] != "randomized") return "arguments.order must be abba, abab or randomized for benchmark_ab";
             if (const auto missing = require({"baseline", "candidate", "frames", "metrics", "visual"})) {
                 return missing;
             }
@@ -694,10 +898,20 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
         }
         if (recipe == "ab_compare") return require({"a", "b", "captures"});
     }
+    if (name == "vibris_run_matrix") {
+        if (arguments.contains("presets") == arguments.contains("preset_id"))
+            return "arguments requires exactly one of presets and preset_id";
+        const auto count = arguments["matrix"]["sources"].size() * arguments["matrix"]["configs"].size() *
+            (arguments.contains("presets") ? arguments["presets"].size() : 1);
+        if (count > 512) return "arguments expands to more than 512 experiment steps";
+    }
     if (name == "vibris_artifacts") {
         const auto operation = arguments.at("operation").get<std::string>();
         if (operation == "get") return require({"manifest_id"});
         if (operation == "delete") return require({"manifest_id", "expected_manifest_sha256"});
+        if (operation == "prune" && !arguments.contains("older_than_ms") &&
+            !arguments.contains("job_ids") && !arguments.contains("recipe") && !arguments.contains("keep_latest"))
+            return "arguments.prune requires older_than_ms, job_ids, recipe or keep_latest";
     }
     return std::nullopt;
 }
@@ -730,13 +944,16 @@ Json mcp_result(std::string_view tool_name, Json payload, bool is_error) {
 
 } // namespace
 
-ToolRegistry::ToolRegistry(ToolDispatch dispatch) : definitions_(build_definitions()), dispatch_(std::move(dispatch)) {}
+ToolRegistry::ToolRegistry(ToolDispatch dispatch)
+    : strict_definitions_(build_definitions()), definitions_(strict_definitions_), dispatch_(std::move(dispatch)) {
+    for (auto& definition : definitions_) definition["inputSchema"] = public_schema(definition["inputSchema"]);
+}
 const Json& ToolRegistry::definitions() const noexcept { return definitions_; }
 InvocationResult ToolRegistry::invoke(std::string_view name, const Json& arguments) const {
-    const auto definition_it = std::find_if(definitions_.begin(), definitions_.end(), [&](const Json& item) {
+    const auto definition_it = std::find_if(strict_definitions_.begin(), strict_definitions_.end(), [&](const Json& item) {
         return item["name"].get_ref<const std::string&>() == name;
     });
-    if (definition_it == definitions_.end()) {
+    if (definition_it == strict_definitions_.end()) {
         return InvocationError{InvocationErrorCode::UnknownTool, "Unknown tool: " + std::string(name)};
     }
     if (const auto error = validate_argument_policy(name, arguments)) return *error;
@@ -754,14 +971,15 @@ InvocationResult ToolRegistry::invoke(std::string_view name, const Json& argumen
                               ? dispatch_(name, arguments)
                               : ToolFailure{"SERVER_NOT_READY", "The MCP backend is not connected.", true,
                                             {{"tool", std::string(name)}}};
-    if (const auto* value = std::get_if<Json>(&outcome)) return mcp_result(name, *value, false);
+    if (const auto* value = std::get_if<Json>(&outcome))
+        return mcp_result(name, ResultMapper::agent_projection(name, *value, arguments), false);
 
     const auto& failure = std::get<ToolFailure>(outcome);
     Json error{{"code", failure.code},
                {"message", failure.message},
                {"retryable", failure.retryable},
                {"details", failure.details}};
-    return mcp_result(name, std::move(error), true);
+    return mcp_result(name, ResultMapper::agent_projection(name, std::move(error), arguments), true);
 }
 
 } // namespace vibris::mcp

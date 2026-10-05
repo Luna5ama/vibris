@@ -17,7 +17,7 @@ import dev.vibris.protocol.v2.ServerMessage
 
 internal object ProtocolMessages {
     @JvmField
-    val V2: ProtocolVersion = ProtocolVersion.newBuilder().setMajor(3).setMinor(0).build()
+    val V2: ProtocolVersion = ProtocolVersion.newBuilder().setMajor(3).setMinor(1).build()
 
     @JvmStatic
     fun accepted(job: CoreJob, queuePosition: Int): ServerMessage =
@@ -79,6 +79,7 @@ internal object ProtocolMessages {
     )
 
     @JvmStatic
+    @JvmOverloads
     fun failure(
         jobId: String,
         requestId: String,
@@ -88,8 +89,9 @@ internal object ProtocolMessages {
         restoration: RestorationReceipt?,
         actionReceipts: List<ActionReceipt>,
         preludeReceipts: List<ActionReceipt>,
+        details: Map<String, String> = emptyMap(),
     ): TerminalResult {
-        val error = error(code, message)
+        val error = error(code, message).putAllDetails(details)
         if (artifacts.isNotEmpty()) {
             error.setLogPath(artifacts.first().relativePath)
         }

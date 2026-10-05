@@ -42,6 +42,7 @@ public:
     [[nodiscard]] InvocationResult invoke(std::string_view name, const Json& arguments) const;
 
 private:
+    Json strict_definitions_;
     Json definitions_;
     ToolDispatch dispatch_;
 };

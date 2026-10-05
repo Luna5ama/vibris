@@ -5,7 +5,6 @@ import dev.vibris.api.ResourceCatalog
 import dev.vibris.protocol.v2.Action
 import dev.vibris.protocol.v2.ErrorCode
 import dev.vibris.protocol.v2.LoadShader
-import dev.vibris.protocol.v2.VisualThresholds
 import java.util.Locale
 
 internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_ACTIONS) {
@@ -43,7 +42,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
         val deferredCaptureSteps = LinkedHashMap<Int, List<DirectCapture>>()
         val deferredAfterPassSteps = LinkedHashMap<Int, List<DirectCapture>>()
         var estimatedBytes = 0L
-        var comparisons = 0
         var deferCatalogPlanning = false
         fun flushCaptures() {
             estimatedBytes = flush(
@@ -162,31 +160,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
                     requireUnique(artifactNames, capture.targets.single().artifactName)
                     steps.add(ActionStep.patchedShaders(actionIndex, capture))
                 }
-                action.hasCompareCaptures() -> {
-                    flushAll()
-                    val compare = action.compareCaptures
-                    if (
-                        comparisons++ != 0 || compare.baselineActionIndex !in directCaptureActionIndices ||
-                        compare.candidateActionIndex !in directCaptureActionIndices ||
-                        compare.baselineActionIndex == compare.candidateActionIndex ||
-                        compare.baselineLabel.isBlank() || compare.candidateLabel.isBlank() ||
-                        (compare.hasThresholds() && !validThresholds(compare.thresholds))
-                    ) {
-                        throw invalid("Capture comparison is invalid.")
-                    }
-                    steps.add(
-                        ActionStep.compare(
-                            actionIndex,
-                            ComparisonSpec(
-                                compare.baselineActionIndex,
-                                compare.candidateActionIndex,
-                                compare.baselineLabel,
-                                compare.candidateLabel,
-                                if (compare.hasThresholds()) compare.thresholds else null,
-                            ),
-                        ),
-                    )
-                }
                 action.hasInspectShader() -> {
                     flushAll()
                     steps.add(ActionStep.inspect(actionIndex))
@@ -242,7 +215,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
         AFTER_PASS,
         DEFERRED_AFTER_PASS,
         PATCHED_SHADERS,
-        COMPARE,
         INSPECT,
         NSIGHT,
         RUNTIME,
@@ -254,7 +226,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
         val sourceUuid: String?,
         val frames: Int,
         val capture: CapturePlan?,
-        val comparison: ComparisonSpec?,
         val actionIndex: Int,
         val runtimeAction: Action?,
         val loadShader: LoadShader?,
@@ -265,71 +236,66 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
     ) {
         companion object {
             fun load(actionIndex: Int, load: LoadShader) = ActionStep(
-                ActionType.LOAD, null, 0, null, null, actionIndex, null, load,
+                ActionType.LOAD, null, 0, null, actionIndex, null, load,
                 emptyList(), emptyList(), null, emptyList(),
             )
             fun deterministic(block: DeterministicBlock) = ActionStep(
-                ActionType.DETERMINISTIC, null, 0, null, null, block.loadActionIndex, null, block.loadShader,
+                ActionType.DETERMINISTIC, null, 0, null, block.loadActionIndex, null, block.loadShader,
                 emptyList(), emptyList(), block, emptyList(),
             )
             fun activate(actionIndex: Int, uuid: String) =
                 ActionStep(
-                    ActionType.ACTIVATE, uuid, 0, null, null, actionIndex, null, null,
+                    ActionType.ACTIVATE, uuid, 0, null, actionIndex, null, null,
                     emptyList(), emptyList(), null, emptyList(),
                 )
             fun reset(actionIndex: Int) =
                 ActionStep(
-                    ActionType.RESET, null, 0, null, null, actionIndex, null, null,
+                    ActionType.RESET, null, 0, null, actionIndex, null, null,
                     emptyList(), emptyList(), null, emptyList(),
                 )
             fun waitFrames(actionIndex: Int, frames: Int) =
                 ActionStep(
-                    ActionType.WAIT, null, frames, null, null, actionIndex, null, null,
+                    ActionType.WAIT, null, frames, null, actionIndex, null, null,
                     emptyList(), emptyList(), null, emptyList(),
                 )
             fun capture(capture: CapturePlan, actions: List<CaptureAction>) =
                 ActionStep(
-                    ActionType.CAPTURE, null, 0, capture, null, actions.first().actionIndex,
+                    ActionType.CAPTURE, null, 0, capture, actions.first().actionIndex,
                     null, null, actions, emptyList(), null, emptyList(),
                 )
             fun deferredCapture(actions: List<DirectCapture>) =
                 ActionStep(
-                    ActionType.DEFERRED_CAPTURE, null, 0, null, null, actions.first().actionIndex,
+                    ActionType.DEFERRED_CAPTURE, null, 0, null, actions.first().actionIndex,
                     null, null, emptyList(), emptyList(), null, actions,
                 )
             fun afterPass(actions: List<AfterPassAction>) =
                 ActionStep(
-                    ActionType.AFTER_PASS, null, 0, null, null, actions.first().actionIndex,
+                    ActionType.AFTER_PASS, null, 0, null, actions.first().actionIndex,
                     null, null, emptyList(), actions, null, emptyList(),
                 )
             fun deferredAfterPass(actions: List<DirectCapture>) =
                 ActionStep(
-                    ActionType.DEFERRED_AFTER_PASS, null, 0, null, null, actions.first().actionIndex,
+                    ActionType.DEFERRED_AFTER_PASS, null, 0, null, actions.first().actionIndex,
                     null, null, emptyList(), emptyList(), null, actions,
                 )
             fun patchedShaders(actionIndex: Int, capture: CapturePlan) =
                 ActionStep(
-                    ActionType.PATCHED_SHADERS, null, 0, capture, null, actionIndex,
-                    null, null, emptyList(), emptyList(), null, emptyList(),
-                )
-            fun compare(actionIndex: Int, comparison: ComparisonSpec) =
-                ActionStep(
-                    ActionType.COMPARE, null, 0, null, comparison, actionIndex,
+                    ActionType.PATCHED_SHADERS, null, 0, capture, actionIndex,
                     null, null, emptyList(), emptyList(), null, emptyList(),
                 )
             fun inspect(actionIndex: Int) =
                 ActionStep(
-                    ActionType.INSPECT, null, 0, null, null, actionIndex,
+                    ActionType.INSPECT, null, 0, null, actionIndex,
                     null, null, emptyList(), emptyList(), null, emptyList(),
                 )
             fun nsight(actionIndex: Int, action: Action) =
                 ActionStep(
-                    ActionType.NSIGHT, null, 0, null, null, actionIndex,
+                    ActionType.NSIGHT, null, 0, null, actionIndex,
                     action, null, emptyList(), emptyList(), null, emptyList(),
                 )
             fun runtime(actionIndex: Int, action: Action) =
                 ActionStep(
-                    ActionType.RUNTIME, null, 0, null, null, actionIndex,
+                    ActionType.RUNTIME, null, 0, null, actionIndex,
                     action, null, emptyList(), emptyList(), null, emptyList(),
                 )
         }
@@ -359,24 +325,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
     data class AfterPassAction(
         val actionIndex: Int,
         val request: CapturePlan.AfterPassRequest,
-    )
-
-    @JvmRecord
-    data class ComparisonSpec(
-        val baselineActionIndex: Int,
-        val candidateActionIndex: Int,
-        val baselineLabel: String,
-        val candidateLabel: String,
-        val thresholds: VisualThresholds?,
-    )
-
-    @JvmRecord
-    data class Comparison(
-        val baselinePlan: CapturePlan,
-        val candidatePlan: CapturePlan,
-        val baselineLabel: String,
-        val candidateLabel: String,
-        val thresholds: VisualThresholds?,
     )
 
     @JvmRecord
@@ -567,21 +515,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
             return resolved
         }
 
-        @Synchronized
-        @Throws(RuntimeJobExecutor.Failure::class)
-        fun materializeComparison(comparison: ComparisonSpec): Comparison {
-            val baseline = capturePlansByActionIndex[comparison.baselineActionIndex]
-                ?: throw invalid("Comparison baseline capture has not been resolved.")
-            val candidate = capturePlansByActionIndex[comparison.candidateActionIndex]
-                ?: throw invalid("Comparison candidate capture has not been resolved.")
-            return Comparison(
-                baseline,
-                candidate,
-                comparison.baselineLabel,
-                comparison.candidateLabel,
-                comparison.thresholds,
-            )
-        }
 
         private fun availableNames(plan: CapturePlan): List<String> {
             val names = plan.targets
@@ -674,15 +607,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
                 throw invalid("Shader load references are incomplete.")
             }
         }
-
-        private fun validThresholds(value: VisualThresholds): Boolean =
-            value.pixelErrorThreshold in 0.0..1.0 &&
-                (!value.hasMaxMeanAbsoluteError() || value.maxMeanAbsoluteError in 0.0..1.0) &&
-                (!value.hasMaxRootMeanSquareError() || value.maxRootMeanSquareError in 0.0..1.0) &&
-                (!value.hasMaxP95AbsoluteError() || value.maxP95AbsoluteError in 0.0..1.0) &&
-                (!value.hasMaxAbsoluteError() || value.maxAbsoluteError in 0.0..1.0) &&
-                (!value.hasMaxThresholdPixelRatio() || value.maxThresholdPixelRatio in 0.0..1.0) &&
-                (!value.hasMinSsim() || value.minSsim in -1.0..1.0)
 
         @Throws(RuntimeJobExecutor.Failure::class)
         private fun flush(

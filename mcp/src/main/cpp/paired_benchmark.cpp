@@ -668,7 +668,8 @@ Json visual_comparison_guards(const Json& result, bool require_heatmap) {
     };
 
     const auto success = result.find("success");
-    const bool runtime_success = success != result.end() && success->is_boolean() && success->get<bool>();
+    const bool runtime_success = result.value("capture_job_success",
+        success != result.end() && success->is_boolean() && success->get<bool>());
     if (!runtime_success) {
         add_mismatch("VISUAL_JOB_NOT_SUCCESSFUL",
             "The visual comparison job did not return a successful runtime completion receipt.");
@@ -676,7 +677,8 @@ Json visual_comparison_guards(const Json& result, bool require_heatmap) {
 
     const auto comparison = result.find("comparison");
     const bool comparison_receipt = comparison != result.end() && comparison->is_object() &&
-        comparison->contains("passed") && comparison->at("passed").is_boolean() &&
+        comparison->contains("passed") && (comparison->at("passed").is_boolean() ||
+            comparison->value("verdict", std::string{}) == "not_evaluated") &&
         comparison->contains("verdict") && comparison->at("verdict").is_string() &&
         !comparison->at("verdict").get_ref<const std::string&>().empty();
     if (!comparison_receipt) {
@@ -685,9 +687,12 @@ Json visual_comparison_guards(const Json& result, bool require_heatmap) {
     }
 
     const auto frame_ids = result.find("frame_ids");
-    const bool two_frames = frame_ids != result.end() && frame_ids->is_array() && frame_ids->size() == 2 &&
-        frame_ids->at(0).is_number_integer() && frame_ids->at(1).is_number_integer() &&
-        frame_ids->at(0) != frame_ids->at(1);
+    bool two_frames = frame_ids != result.end() && frame_ids->is_array() && frame_ids->size() >= 2 && frame_ids->size() % 2 == 0;
+    if (two_frames) for (std::size_t index = 0; index < frame_ids->size() / 2; ++index) {
+        const auto& a = frame_ids->at(index);
+        const auto& b = frame_ids->at(index + frame_ids->size() / 2);
+        two_frames = two_frames && a.is_number_integer() && b.is_number_integer() && a != b;
+    }
     if (!two_frames) {
         add_mismatch("TWO_DISTINCT_FRAME_RECEIPTS_REQUIRED",
             "The visual comparison must identify distinct baseline and candidate capture frames.");

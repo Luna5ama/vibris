@@ -12,6 +12,7 @@ dependencies {
     runtimeOnly("org.lwjgl", "lwjgl", classifier = "natives-windows")
     implementation(libs.bundles.glWrapper)
     implementation(libs.kotlinxSerializationCore)
+    implementation(libs.kotlinxSerializationJson)
     implementation(libs.kmogus.core)
     implementation(libs.fastutil)
 

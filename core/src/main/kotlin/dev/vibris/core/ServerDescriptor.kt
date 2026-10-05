@@ -103,6 +103,7 @@ internal class ServerDescriptor @JvmOverloads constructor(
         val current = runtime.getResourceCatalog()
         val catalog = ResourceCatalog.newBuilder()
             .setMappingSha256(current.mappingSha256)
+            .setCatalogContext(dev.vibris.protocol.v2.CatalogContext.newBuilder().setShaderGeneration(current.shaderGeneration))
         current.resources.forEach { resource ->
             catalog.addResources(
                 ResourceDescriptor.newBuilder()
@@ -121,6 +122,14 @@ internal class ServerDescriptor @JvmOverloads constructor(
                     .setScalarType(ScalarType.valueOf("SCALAR_TYPE_" + resource.scalarType.name))
                     .setByteSize(resource.byteSize)
                     .setFrameId(resource.frameId)
+                    .setSourceWidth(resource.sourceWidth)
+                    .setSourceHeight(resource.sourceHeight)
+                    .apply {
+                        resource.region?.let {
+                            setRegion(dev.vibris.protocol.v2.TextureRegion.newBuilder()
+                                .setX(it.x).setY(it.y).setWidth(it.width).setHeight(it.height))
+                        }
+                    }
                     .build(),
             )
         }
@@ -131,7 +140,11 @@ internal class ServerDescriptor @JvmOverloads constructor(
                     .setStage(PassStage.valueOf("PASS_STAGE_" + pass.stage.name))
                     .setProgramId(pass.programId)
                     .setOrder(pass.order)
-                    .addAllReadableResources(pass.readableResources),
+                    .addAllReadableResources(pass.readableResources)
+                    .addAllPrograms(pass.programs.map {
+                        dev.vibris.protocol.v2.PassProgram.newBuilder().setProgramId(it.programId)
+                            .setStage(it.stage).setEntryFile(it.entryFile).setMainSource(it.mainSource).build()
+                    }),
             )
         }
         return catalog.build()

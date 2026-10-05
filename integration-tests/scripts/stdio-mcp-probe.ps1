@@ -301,11 +301,13 @@ try
         "vibris_run_actions",
         "vibris_run_matrix",
         "vibris_job",
-        "vibris_artifacts"
+        "vibris_artifacts",
+        "vibris_compare",
+        "vibris_preview_presets"
     )
     if ([string]::Join("`n", $listed) -cne [string]::Join("`n", $expectedTools))
     {
-        throw "tools/list did not expose exactly the expected 10-tool v2 surface."
+        throw "tools/list did not expose the expected tool surface."
     }
 
     $status = Get-ToolPayload (Get-Response -Responses $first.Responses -Id 3)

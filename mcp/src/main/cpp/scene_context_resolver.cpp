@@ -1,6 +1,7 @@
 #include "scene_context_resolver.hpp"
 
 #include "state_error.hpp"
+#include "name_suggestions.hpp"
 
 #include <string>
 #include <string_view>
@@ -64,7 +65,12 @@ proto::ScenePreset SceneContextResolver::resolve_preset(
         if (match != nullptr) invalid("The preset identifier is duplicated in the server catalog.");
         match = &preset;
     }
-    if (match == nullptr) invalid("The requested scene preset was not found.");
+    if (match == nullptr) {
+        std::vector<std::string> names;
+        for (const auto& preset : response.presets()) names.push_back(preset.preset_id());
+        throw StateError("INVALID_PRESET", "The requested scene preset was not found.", false,
+            {{"suggestions", name_suggestions(preset_id, std::move(names))}});
+    }
     validate(*match);
     return *match;
 }

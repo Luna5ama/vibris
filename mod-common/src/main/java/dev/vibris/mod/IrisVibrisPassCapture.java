@@ -46,6 +46,7 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 	private static final long MAX_CAPTURE_BYTES = Integer.MAX_VALUE;
 
 	private final Backend backend;
+	private final TextureAnalysisJobs analyses = new TextureAnalysisJobs();
 	private final List<PassHandle> passes = new ArrayList<>();
 	private final Map<String, List<PendingCapture>> pendingByPass = new HashMap<>();
 	private final Map<String, Integer> occurrences = new HashMap<>();
@@ -62,8 +63,13 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 	}
 
 	public synchronized PassHandle register(ResourceCatalog.PassStage stage, String programId) {
+		return register(stage, programId, List.of());
+	}
+
+	public synchronized PassHandle register(ResourceCatalog.PassStage stage, String programId,
+		List<ResourceCatalog.PassProgram> programs) {
 		ensureOpen();
-		PassHandle handle = new PassHandle(stage, programId, passes.size());
+		PassHandle handle = new PassHandle(stage, programId, passes.size(), programs);
 		if (passes.stream().anyMatch(existing -> existing.passId().equals(handle.passId()))) {
 			throw new IllegalStateException("Duplicate Vibris pass identifier: " + handle.passId());
 		}
@@ -102,10 +108,10 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 		List<ResourceCatalog.PassDescriptor> descriptors;
 		synchronized (this) {
 			descriptors = passes.stream()
-				.map(pass -> ResourceCatalog.PassDescriptor.of(pass.stage(), pass.programId(), pass.order(), readable))
+				.map(pass -> ResourceCatalog.PassDescriptor.of(pass.stage(), pass.programId(), pass.order(), readable, pass.programs))
 				.toList();
 		}
-		return ResourceCatalog.of(resources, descriptors);
+		return ResourceCatalog.of(resources, descriptors, IrisVibrisCompileCatalog.current().shaderGeneration());
 	}
 
 	public CompletionStage<CapturePlan.AfterPassReceipt> schedule(
@@ -149,6 +155,7 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 			occurrence = occurrences.merge(pass.passId(), 1, Integer::sum);
 			captures = pendingByPass.remove(pass.passId());
 		}
+		analyses.boundary(pass.passId(), IrisVibrisLifecycle.currentFrame() + 1);
 		if (captures == null || captures.isEmpty()) return;
 
 		List<PendingCapture> active = new ArrayList<>();
@@ -192,6 +199,16 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 			ensureOpen();
 			return backend.resolve(target.resource(), latestMainFlips, latestShadowFlips).glId();
 		}
+	}
+
+	public CompletionStage<dev.vibris.api.TextureAnalysisResult> analyzeTexture(
+		dev.vibris.api.TextureAnalysisRequest request, ArtifactSink sink,
+		CancellationToken cancellation, java.util.function.IntSupplier texture) {
+		return analyses.schedule(request, sink, cancellation, texture);
+	}
+
+	public void endFrame() {
+		analyses.boundary(null, IrisVibrisLifecycle.currentFrame() + 1);
 	}
 
 	private static void validateRequest(CapturePlan.AfterPassRequest request, ResourceCatalog catalog) {
@@ -244,6 +261,7 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 	public synchronized void close() {
 		if (closed) return;
 		closed = true;
+		analyses.close();
 		CancellationException cancellation = new CancellationException("Iris pipeline was destroyed");
 		pendingByPass.values().stream().flatMap(Collection::stream)
 			.forEach(pending -> pending.future.completeExceptionally(cancellation));
@@ -259,8 +277,15 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 		private final String programId;
 		private final int order;
 		private final String passId;
+		private final List<ResourceCatalog.PassProgram> programs;
 
 		public PassHandle(ResourceCatalog.PassStage stage, String programId, int order) {
+			this(stage, programId, order, List.of());
+		}
+
+		public PassHandle(ResourceCatalog.PassStage stage, String programId, int order,
+			List<ResourceCatalog.PassProgram> programs) {
+			this.programs = List.copyOf(programs);
 			this.stage = Objects.requireNonNull(stage, "stage");
 			this.programId = Objects.requireNonNull(programId, "programId");
 			this.order = order;
@@ -405,7 +430,7 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 			ResolvedResource resource = resolve(selector, mainFlips, shadowFlips);
 			if (selector.kind() == ResourceCatalog.ResourceKind.TEXTURE) {
 				return new TextureSnapshot(resource.physicalName(),
-					GlArtifactCapture.readTexture(resource.glId(), selector.mipLevel()));
+					GlArtifactCapture.readTexture(resource.glId(), selector.mipLevel(), selector.region()));
 			}
 			if (selector.kind() == ResourceCatalog.ResourceKind.BUFFER) {
 				GL42C.glMemoryBarrier(GL42C.GL_BUFFER_UPDATE_BARRIER_BIT | GL43C.GL_SHADER_STORAGE_BARRIER_BIT);
@@ -632,7 +657,8 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 			metadata.getInternalFormat(), metadata.getChannelCount(), metadata.getScalarType(),
 			metadata.getByteSize(), frameId, name, category, metadata.getTextureTarget(),
 			metadata.getChannelLayout(), metadata.getNumericClass(), metadata.getComponentBits(),
-			metadata.getReadbackFormat(), metadata.getReadbackType());
+			metadata.getReadbackFormat(), metadata.getReadbackType(), metadata.getRegion(),
+			metadata.getSourceWidth(), metadata.getSourceHeight());
 	}
 
 	private static CaptureResult.CapturedArtifact captured(CapturePlan.ArtifactOutputSpec output) {
@@ -668,6 +694,10 @@ public final class IrisVibrisPassCapture implements AutoCloseable {
 		boolean yFlipped
 	) throws IOException {
 		String json = "{\"logical_name\":\"" + escape(resource.logicalName()) + "\"" +
+			(resource.region() == null ? "" : ",\"region\":{\"x\":" + resource.region().x() +
+				",\"y\":" + resource.region().y() + ",\"width\":" + resource.region().width() +
+				",\"height\":" + resource.region().height() + "}") +
+			",\"source_width\":" + resource.sourceWidth() + ",\"source_height\":" + resource.sourceHeight() +
 			",\"kind\":\"" + resource.kind() + "\"" +
 			",\"width\":" + resource.width() +
 			",\"height\":" + resource.height() +

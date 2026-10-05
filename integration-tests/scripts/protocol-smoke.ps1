@@ -4,8 +4,8 @@ param(
     [Parameter(Mandatory)] [string] $ServerJar,
     [Parameter(Mandatory)] [string] $Listen,
     [string] $PingId,
-    [uint32] $ProtocolMajor = 2,
-    [uint32] $ProtocolMinor = 0,
+    [uint32] $ProtocolMajor = 3,
+    [uint32] $ProtocolMinor = 1,
     [uint32[]] $Capability = @(1),
     [ValidateSet("hello-ping-pong", "reject-major-mismatch")] [string] $Scenario,
     [int] $TimeoutSeconds = 15
@@ -141,7 +141,7 @@ function Assert-V2HelloPingPong
     param([object[]] $Messages, [string] $MessageId)
 
     $hello = @($Messages | Where-Object { $_.type -eq "ServerHello" })
-    if ($hello.Count -ne 1 -or $hello[0].protocol_major -ne 2 -or $hello[0].protocol_minor -ne 0)
+    if ($hello.Count -ne 1 -or $hello[0].protocol_major -ne 3 -or $hello[0].protocol_minor -ne 1)
     {
         throw "V2 client did not observe exactly one negotiated protocol 2.0 ServerHello."
     }
@@ -218,7 +218,8 @@ try
     $serverStdout = Join-Path $tempRoot "server.stdout"
     $serverStderr = Join-Path $tempRoot "server.stderr"
     $serverArguments = @("-jar", $ServerJar, "--port", $port, "--work-root", $tempRoot)
-    $server = Start-Process -FilePath "java.exe" -ArgumentList $serverArguments -PassThru -WindowStyle Hidden `
+    $javaExecutable = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin\java.exe" } else { "java.exe" }
+    $server = Start-Process -FilePath $javaExecutable -ArgumentList $serverArguments -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr
     $ownedProcesses.Add($server)
     Wait-ForPort -Port $port -Server $server -Deadline ([datetime]::UtcNow.AddSeconds($TimeoutSeconds))
@@ -247,7 +248,7 @@ try
         }
         $rejected | ForEach-Object { $_ | ConvertTo-Json -Compress }
         if ($server.HasExited) { throw "Fake server exited after rejecting a major-version mismatch." }
-        $messages = @(Invoke-SmokeClient -Major 2 -Minor 0 -Capabilities @(1) -MessageId $PingId `
+        $messages = @(Invoke-SmokeClient -Major 3 -Minor 1 -Capabilities @(1) -MessageId $PingId `
             -Mode "hello-ping-pong")
     }
     else

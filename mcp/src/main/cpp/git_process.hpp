@@ -97,7 +97,7 @@ inline std::wstring git_command_line(const std::vector<std::wstring>& arguments)
     return command;
 }
 
-inline std::vector<wchar_t> sanitized_git_environment() {
+inline std::vector<wchar_t> sanitized_git_environment(const std::filesystem::path& index = {}) {
     std::vector<wchar_t> filtered;
     auto* environment = GetEnvironmentStringsW();
     if (environment == nullptr) {
@@ -114,6 +114,11 @@ inline std::vector<wchar_t> sanitized_git_environment() {
         }
     }
     FreeEnvironmentStringsW(environment);
+    if (!index.empty()) {
+        const auto entry = L"GIT_INDEX_FILE=" + std::filesystem::absolute(index).wstring();
+        filtered.insert(filtered.end(), entry.begin(), entry.end());
+        filtered.push_back(L'\0');
+    }
     filtered.push_back(L'\0');
     return filtered;
 }

@@ -1,12 +1,13 @@
 package dev.vibris.api
 
 @JvmRecord
-data class ScenePreset(
+data class ScenePreset @JvmOverloads constructor(
     val presetId: String,
     val displayName: String,
     val context: SceneContext,
     val version: String,
     val tags: List<String>,
+    val description: String = "",
 ) {
     constructor(presetId: String, displayName: String, context: SceneContext, version: String) :
         this(presetId, displayName, context, version, emptyList())

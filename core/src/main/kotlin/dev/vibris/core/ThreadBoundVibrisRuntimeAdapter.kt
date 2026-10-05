@@ -114,9 +114,18 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
         }
         val start = frames.currentFrame()
         return trackActivity {
-            frames.waitRenderedFrames(frameCount, cancellation).thenApply { end ->
-                frameWaitObserver?.accept(start, end)
-                end
+            frames.waitRenderedFrames(frameCount, cancellation).thenCompose { end ->
+                onClient(Supplier {
+                    catalog = try {
+                        host.resourceCatalog(end)
+                    } catch (_: UnsupportedOperationException) {
+                        ResourceCatalog.empty()
+                    } catch (_: IllegalStateException) {
+                        ResourceCatalog.empty()
+                    }
+                    frameWaitObserver?.accept(start, end)
+                    end
+                }, cancellation)
             }
         }
     }
@@ -244,6 +253,15 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
             host.executeOnClient(task)
         }
         return result
+    }
+
+    override fun analyzeTexture(
+        request: dev.vibris.api.TextureAnalysisRequest, sink: ArtifactSink?, cancellation: CancellationToken,
+    ): CompletionStage<dev.vibris.api.TextureAnalysisResult> {
+        if (closed.get()) return CompletableFuture.failedFuture(IllegalStateException("Vibris runtime is closed"))
+        return trackActivity {
+            onClientStage(Supplier { host.analyzeTexture(request, sink, cancellation) }, cancellation)
+        }
     }
 
     private fun onClientTask(action: Runnable, cancellation: CancellationToken): CompletionStage<Void> {

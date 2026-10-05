@@ -8,7 +8,6 @@ import dev.vibris.protocol.v2.ArtifactFormat
 import dev.vibris.protocol.v2.ArtifactKind
 import dev.vibris.protocol.v2.ArtifactMetadata
 import dev.vibris.protocol.v2.ArtifactRole
-import dev.vibris.protocol.v2.CompareReceipt
 import dev.vibris.protocol.v2.CaptureReceipt
 import dev.vibris.protocol.v2.ErrorCode
 import dev.vibris.protocol.v2.JobResult
@@ -25,7 +24,6 @@ internal class CaptureProtocolArtifacts {
         captured: List<CaptureResult>,
         transaction: ArtifactManager.JobTransaction,
         diagnostics: List<ReloadResult.Diagnostic>,
-        comparison: CompareReceipt?,
         additionalArtifacts: List<GeneratedArtifact>,
         physicalNames: Map<String, String>,
     ): JobResult {
@@ -36,7 +34,7 @@ internal class CaptureProtocolArtifacts {
             )
         }
         plans.indices.forEach { index -> validateResult(plans[index], captured[index]) }
-        val committed = transaction.commit(specifications(plans, comparison != null, additionalArtifacts))
+        val committed = transaction.commit(specifications(plans, additionalArtifacts))
         val result = JobResult.newBuilder().setResultManifestId(committed.manifestId())
         for (index in plans.indices) {
             val plan = plans[index]
@@ -53,16 +51,6 @@ internal class CaptureProtocolArtifacts {
                         ),
                     )
                 }
-            }
-        }
-        if (comparison != null) {
-            result.addArtifacts(
-                requireArtifact(committed, AbArtifactComparator.METRICS_FILE),
-            )
-            AbArtifactComparator.heatmapFiles(plans.first()).forEach { fileName ->
-                result.addArtifacts(
-                    requireArtifact(committed, fileName),
-                )
             }
         }
         additionalArtifacts.forEach { artifact ->
@@ -199,7 +187,13 @@ internal class CaptureProtocolArtifacts {
             .setScalarType(dev.vibris.protocol.v2.ScalarType.valueOf("SCALAR_TYPE_" + resource.scalarType.name))
             .setByteSize(resource.byteSize)
             .setFrameId(resource.frameId)
+            .setSourceWidth(resource.sourceWidth)
+            .setSourceHeight(resource.sourceHeight)
             .setPhysicalName(physicalName ?: resource.semanticLabel.ifBlank { target.resource.logicalName })
+        resource.region?.let {
+            result.setRegion(dev.vibris.protocol.v2.TextureRegion.newBuilder()
+                .setX(it.x).setY(it.y).setWidth(it.width).setHeight(it.height))
+        }
         target.resource.textureView?.let { view ->
             result.addAvailableViews(
                 dev.vibris.protocol.v2.TextureView.valueOf("TEXTURE_VIEW_" + view.name),
@@ -210,7 +204,6 @@ internal class CaptureProtocolArtifacts {
 
     private fun specifications(
         plans: List<CapturePlan>,
-        comparison: Boolean,
         additionalArtifacts: List<GeneratedArtifact>,
     ): Map<String, ArtifactManifest.FileSpec> = LinkedHashMap<String, ArtifactManifest.FileSpec>().apply {
         put(
@@ -231,28 +224,6 @@ internal class CaptureProtocolArtifacts {
                         protocolFormat(output.format),
                         protocolRole(output.role),
                         mediaType(output.format),
-                    ),
-                )
-            }
-        }
-        if (comparison) {
-            put(
-                AbArtifactComparator.METRICS_FILE,
-                ArtifactManifest.FileSpec(
-                    ArtifactKind.ARTIFACT_KIND_BENCHMARK_METRICS,
-                    ArtifactFormat.ARTIFACT_FORMAT_JSON,
-                    ArtifactRole.ARTIFACT_ROLE_DIAGNOSTIC,
-                    "application/json",
-                ),
-            )
-            AbArtifactComparator.heatmapFiles(plans.first()).forEach { fileName ->
-                put(
-                    fileName,
-                    ArtifactManifest.FileSpec(
-                        ArtifactKind.ARTIFACT_KIND_HEATMAP,
-                        ArtifactFormat.ARTIFACT_FORMAT_PNG,
-                        ArtifactRole.ARTIFACT_ROLE_DIAGNOSTIC,
-                        "image/png",
                     ),
                 )
             }

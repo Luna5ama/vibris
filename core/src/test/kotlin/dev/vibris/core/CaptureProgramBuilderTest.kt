@@ -3,7 +3,6 @@ package dev.vibris.core
 import dev.vibris.api.ResourceCatalog
 import dev.vibris.protocol.v2.Action
 import dev.vibris.protocol.v2.ActionSequence
-import dev.vibris.protocol.v2.CompareCaptures
 import dev.vibris.protocol.v2.DumpBuffer
 import dev.vibris.protocol.v2.DumpBufferAfterPass
 import dev.vibris.protocol.v2.GetGpuMetrics
@@ -166,18 +165,16 @@ class CaptureProgramBuilderTest {
     }
 
     @Test
-    fun `deferred planning retries cleanly and materializes comparisons by raw action index`() {
+    fun `deferred planning retries cleanly and preserves raw capture indices`() {
         val actions = listOf(
             load(),
             reset(),
             waitFrames(2),
             dumpBuffer("baseline"),
             dumpBuffer("candidate"),
-            compare(3, 4),
         )
         val program = CaptureProgramBuilder().actions(job(actions), ResourceCatalog.empty())
         val deterministic = program.steps[0]
-        val comparison = program.steps[1].comparison!!
         var registrations = 0
 
         assertThrows(IllegalStateException::class.java) {
@@ -187,9 +184,6 @@ class CaptureProgramBuilderTest {
             }
         }
         assertEquals(1, registrations)
-        assertThrows(RuntimeJobExecutor.Failure::class.java) {
-            program.planningSession.materializeComparison(comparison)
-        }
 
         var registeredBytes = -1L
         val resolved = program.planningSession.resolveDeferred(deterministic, bufferCatalog()) { plan, bytes ->
@@ -200,9 +194,6 @@ class CaptureProgramBuilderTest {
         assertEquals(2, registrations)
         assertEquals(registeredBytes, resolved.estimatedBytes)
         assertEquals(listOf(3, 4), resolved.captureActions.map { it.actionIndex })
-        val materialized = program.planningSession.materializeComparison(comparison)
-        assertEquals("baseline", materialized.baselinePlan.targets.single().artifactName)
-        assertEquals("candidate", materialized.candidatePlan.targets.single().artifactName)
         val second = program.planningSession.resolveDeferred(deterministic, bufferCatalog()) { _, _ ->
             throw AssertionError("a resolved group must not register twice")
         }
@@ -239,7 +230,6 @@ class CaptureProgramBuilderTest {
             Action.newBuilder().setInspectShader(InspectShader.getDefaultInstance()).build(),
             dumpBuffer("later", "later_buffer"),
             dumpBuffer("later-two", "later_buffer"),
-            compare(4, 5),
         )
         val program = CaptureProgramBuilder().actions(job(actions), ResourceCatalog.empty())
 
@@ -248,7 +238,6 @@ class CaptureProgramBuilderTest {
                 CaptureProgramBuilder.ActionType.DETERMINISTIC,
                 CaptureProgramBuilder.ActionType.INSPECT,
                 CaptureProgramBuilder.ActionType.DEFERRED_CAPTURE,
-                CaptureProgramBuilder.ActionType.COMPARE,
             ),
             program.steps.map { it.type },
         )
@@ -280,9 +269,6 @@ class CaptureProgramBuilderTest {
         }
         assertEquals(2, registrations)
         assertEquals(listOf(4, 5), resolved.captureActions.map { it.actionIndex })
-        val comparison = program.planningSession.materializeComparison(program.steps[3].comparison!!)
-        assertEquals("later", comparison.baselinePlan.targets.single().artifactName)
-        assertEquals("later-two", comparison.candidatePlan.targets.single().artifactName)
         assertSame(
             resolved,
             program.planningSession.resolveDeferredCapture(
@@ -474,13 +460,6 @@ class CaptureProgramBuilderTest {
                 .setArtifactName(artifactName),
         ).build()
 
-    private fun compare(baseline: Int, candidate: Int): Action = Action.newBuilder().setCompareCaptures(
-        CompareCaptures.newBuilder()
-            .setBaselineActionIndex(baseline)
-            .setCandidateActionIndex(candidate)
-            .setBaselineLabel("baseline")
-            .setCandidateLabel("candidate"),
-    ).build()
 
     private fun nsight(
         artifactName: String,

@@ -96,7 +96,7 @@ class VibrisPresetCatalog private constructor(
         refreshFromDisk(false)
         return values.values
             .sortedBy { it.id }
-            .map { ScenePreset(it.id, it.id, it.context(), SCHEMA_VERSION.toString(), effectiveTags(it)) }
+            .map { ScenePreset(it.id, it.id, it.context(), SCHEMA_VERSION.toString(), effectiveTags(it), it.description) }
     }
 
     @Synchronized
@@ -250,7 +250,7 @@ class VibrisPresetCatalog private constructor(
     )
 
     @JvmRecord
-    data class Preset(
+    data class Preset @JvmOverloads constructor(
         val id: String,
         val saveId: String,
         val saveName: String,
@@ -266,6 +266,7 @@ class VibrisPresetCatalog private constructor(
         val resolution: SceneContext.Resolution,
         val settingsPresetId: String,
         val tags: List<String>,
+        val description: String = "",
     ) {
         constructor(
             id: String,
@@ -391,6 +392,11 @@ class VibrisPresetCatalog private constructor(
                         ),
                         string(value, "settings_preset_id"),
                         tags(value, id),
+                        value["description"]?.let {
+                            val primitive = it as? JsonPrimitive ?: throw IllegalArgumentException("Invalid preset description")
+                            require(primitive.isString) { "Preset description must be a string" }
+                            primitive.content
+                        }.orEmpty(),
                     )
                     if (presets.putIfAbsent(preset.id, preset) != null) {
                         throw IllegalArgumentException("Duplicate preset id: ${preset.id}")
@@ -452,6 +458,7 @@ class VibrisPresetCatalog private constructor(
                         put("tags", buildJsonArray {
                             effectiveTags(preset).forEach { add(JsonPrimitive(it)) }
                         })
+                        if (preset.description.isNotEmpty()) put("description", JsonPrimitive(preset.description))
                     })
                 })
             }

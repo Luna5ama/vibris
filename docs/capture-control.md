@@ -1,12 +1,13 @@
-# Vibris engineering validation v2
+# Vibris capture and experiment control
 
-Vibris exposes a breaking, request-scoped engineering-validation service. The wire protocol, MCP schemas,
-workspace identity, durable-job state, delivery receipts, and delivery transaction manifests use schema version 2.
+Vibris exposes a request-scoped engineering-validation service. The wire protocol is major 3, minor 1.
+Workspace identity, delivery receipts, and delivery transaction manifests retain schema version 2;
+durable job checkpoints use schema version 3. Generated protocol classes retain their `v2` package name.
 The canonical `server.json` format is schema 4.
 
 ## Clean cutover
 
-Build and run matching v2 copies of Iris, Vibris Core, and Vibris MCP. A client must send protocol major 2 and the exact
+Build and run matching copies of Iris, Vibris Core, and Vibris MCP. A client must send protocol major 3 and the exact
 workspace ID on every request. Missing or different protocol versions fail with `UNSUPPORTED_VERSION` before any job
 is submitted.
 
@@ -49,7 +50,7 @@ paths resolve from the selected game directory exactly as written.
 
 ## MCP surface
 
-The MCP publishes exactly ten tools:
+The MCP publishes twelve tools:
 
 - `vibris_get_status`
 - `vibris_restart`
@@ -61,6 +62,8 @@ The MCP publishes exactly ten tools:
 - `vibris_run_recipe`
 - `vibris_job`
 - `vibris_artifacts`
+- `vibris_compare`
+- `vibris_preview_presets`
 
 Every call includes `worktree_root`. Calls that start work also include `preset_id`. Recipe requests include the typed
 `recipe` discriminator. Job query, result, cancel, and resume operations exist only on `vibris_job`.
@@ -247,6 +250,103 @@ include the exact pass, frame/occurrence, logical and physical resource identity
 hashes, manifest ID, and manifest hash. PNG output has the documented image orientation; BIN output preserves native
 readback bytes.
 
+## Agent result projection
+
+Agent responses use one MCP boundary projection. Complete job results and receipts on disk are unchanged;
+Synchronous and durable terminal results include `full_result_path`. Terminal `vibris_job` responses include events only when
+`event_cursor` was explicitly supplied. Effective settings retain the settings SHA, total setting count and only
+non-default, request-override or preset settings. Origins use short enum names. Subsequent occurrences of the same
+SHA refer to the first settings object using a JSON pointer in `settings_ref`. Repeated artifact records retain
+only artifact ID, path and SHA. Repeated resource descriptors may use `resource_ref` plus their frame ID.
+
+Resource catalogs omit redundant per-pass readable resource lists. Resource rows carry logical name, frame ID and
+`layout_ref`; the shared descriptors are in `catalog.resource_layouts`. Texture depth/layers/mip-level defaults are
+declared once in `texture_layout_defaults`; kind, scalar type and view enums omit their fixed protocol prefixes.
+Buffer layouts retain kind and byte size. Source dimensions equal to the layout dimensions are omitted. A frame ID
+shared by every resource is moved into `catalog_context`. Pass stage/program ID are derived from `pass_id`.
+In each pass's programs, omitted program_id is the final segment of pass_id, omitted stage is compute,
+and omitted entry_file is `/{program_id}.{extension}` using `program_stage_extensions`, unless
+program_defaults supplies entry_file. Shared main_source paths may also be supplied by program_defaults.
+All paths retain their full spelling. texture_layout_defaults also supplies common available_views.
+`catalog_context` identifies the active source,
+settings SHA and shader generation. Empty source/settings fields indicate a generation not observed by Core;
+they must not be treated as proof that a prior configuration is still loaded. Pass programs list their stage,
+entry file and full main-source path, associated through actual program objects.
+
+Public tool schemas are flattened closed objects. The server validates the original strict branch schema and reports
+field paths, applicable branches and allowed discriminator values. Unknown names include up to three suggestions;
+invalid texture views include available views. Missing profile metrics return `missing` entries instead of failing
+the job. Benchmark target/sibling/sentinel metrics remain mandatory.
+
+## Experiments
+
+`profile_matrix` accepts `presets` (up to 32) or `preset_id`, `rounds` (1-10), and `order` (`palindrome`,
+`sequential` or seeded `randomized`). Palindrome executes the forward order followed by its reverse, including
+the two central occurrences (ABC becomes ABCCBA). Preset is the outer axis, then round, then case.
+The expanded experiment must not exceed 512 steps. `vibris_run_matrix` also accepts a presets axis.
+
+Profile summaries provide one row per preset/source/config/metric: run count, median run-level p50/p95/avg,
+minimum/maximum p50 and main source. Optional `baseline: {source_id, config_id}` produces paired per-round
+relative deltas using `delta_statistic` (`p50` by default, or `avg`). Median/minimum/maximum describe the deltas;
+with at least three rounds, the 95% Student t interval estimates their mean. It does not estimate the median.
+`consistency` reports source/config/preset/scene/pass-mapping/environment changes within a case without failing it.
+Raw measurements are stored in a CSV artifact and the full result; only `result_detail: "full"` inlines them.
+Within each run, identical aggregate/program records for the same metric are counted once, preferring program
+metadata. Conflicting records are excluded from that run's statistics and listed in `metric_conflicts`.
+The full result and CSV retain all original records.
+
+Commit sources accept `patch`, relative to the worktree or absolute. The frozen patch and SHA accompany the job.
+A private Git index applies the patch to the selected commit and archives the resulting shader tree without
+changing the worktree or its index. Every changed path must stay under `shader_directory`.
+`git stash create` can provide a revision containing uncommitted tracked changes (not untracked files).
+Binary changes require a patch generated with `git diff --binary`.
+
+## Texture analysis
+
+`dump_texture` and `dump_buffer` accept optional `pass_id`; absent pass means the current final output.
+Texture dumps accept `region: {x,y,width,height}` in texels at the selected mip, using BIN row order.
+Bounds errors report the mip dimensions. Metadata includes region and original source dimensions.
+
+`texture_stats` accepts the same texture selector, optional pass and region. It creates no artifact and returns
+per-channel min/max/mean/population std, exact interpolated p1/p50/p99 and separate NaN/+Inf/-Inf/zero counts.
+Nonfinite values are excluded from finite statistics; all-nonfinite statistics are null.
+
+`accumulate_texture` samples 2-65535 frames on the GPU at one named pass or frame end. Default batches are 16;
+batches must be 2-64 and frames must be at least twice batches. It supports single-layer 2D textures, mip and
+region, with optional RGB luma weights. 3D, array and MSAA textures are rejected. State exceeding 1 GiB is rejected.
+Outputs select mean/variance/stderr/flicker/nonfinite, with mean/variance/stderr as defaults. Variance is unbiased
+sample variance. Flicker averages absolute differences between consecutive finite pairs.
+Normalized texture accumulation uses GPU sampling units (`units: gpu_normalized`), while integer
+and floating-point textures use native numeric values. Source numeric class is recorded explicitly. BIN dumps and
+CPU texture_stats keep raw integer-code units for normalized textures; SNORM raw codes cannot be reconstructed from
+GPU samples. Nonfinite samples do
+not enter Welford moments or batch means. Each frame is sampled at most once even if its pass repeats.
+
+Files use `<name>.<output>.bin` and same-name JSON metadata; luma files use `<name>.luma.<output>.bin` (R32F).
+Additional valid_count, valid_batches and incomplete_batches files preserve per-pixel effective counts.
+Metadata records actual batch lengths, incomplete batch indices, screen batch means, valid pixel counts and
+per-batch nonfinite counts. SE uses the unweighted valid batch means. It is marked as standard batch-means SE
+only when all batches have equal lengths and all samples are valid. Other SE values are explicitly qualified.
+
+`vibris_compare` decodes local PNG (8/16 bit normalized) and typed BIN sidecars under worktree `.vibris`.
+Topology mismatches fail. Difference mode reports overall/per-channel MAE/RMSE/max/exact p95, mean values,
+relative MSE, threshold pixel ratio and nonfinite mismatches. Relative MSE divides squared error by A's energy.
+PSNR and luminance SSIM apply only to PNG/normalized formats; other values are null.
+SSIM uses an 11x11 Gaussian window, sigma 1.5, with reflected boundaries (not the former global SSIM).
+Statistical mode accepts accumulation `.mean.bin` files with variance/stderr siblings, assumes independent
+runs and propagates batch qualification. Its screen mean ratios always refer to the full capture, even when pixel
+metrics select a region; `screen_mean_scope` marks this explicitly. Analysis JSON and optional heatmap are written under `.vibris/analysis`.
+Without thresholds, the verdict is `not_evaluated`. A/B workflows compare every requested capture pair locally.
+The Core CompareCaptures action and enum number 5 are reserved and no longer executable.
+
+## Preset previews
+
+`vibris_preview_presets` selects `preset_ids` or `tags`, supports refresh and sync/async execution, and renders
+cache misses through the durable multi-preset workflow using frozen workspace source and default settings.
+Both success and error restore runtime state. Thumbnails are keyed by preset SHA, tile width and Vibris version;
+their metadata records render-time source/settings SHAs. Contact sheets contain up to 24 scenes in 6x4 tiles,
+with preset IDs and tags in an embedded ASCII bitmap font. `list_presets` includes a cached thumbnail when available.
+
 ## Artifacts
 
 All generated output is owned by the worktree-local `.vibris/artifact` tree. `vibris_artifacts` lists, describes, and
@@ -254,8 +354,15 @@ deletes managed v2 manifests subject to workspace ownership. Manifests include r
 and every output path. Capacity is reserved before capture; a request that would exceed policy fails before partial
 output is published.
 
+`vibris_artifacts operation=prune` composes list and SHA-checked deletes. At least one of older_than_ms,
+job_ids, recipe or keep_latest is required; dry_run previews selection without deleting anything.
+Time-only pruning also removes old local analysis directories, with keep_latest applied separately.
+The response lists selected/deleted manifests, byte totals and failures. Linked analysis trees are not followed.
+
 ## Build and delivery
 
 Use the repository Gradle/CMake builds, then run `tools/build-delivery.ps1` and `tools/package-delivery.ps1` when a
-delivery is explicitly requested. Both scripts require schema-2 receipts/manifests and publish transactionally. Building
+delivery is explicitly requested. The delivery contains `vibris-mcp.exe` and an independent `vibris-fabric-*.jar`.
+Iris is a compile-time composite dependency, not the container for Vibris. The package command uses `-VibrisModJar`.
+Both scripts require schema-2 receipts/manifests and publish transactionally. Building
 or packaging does not authorize deployment, Minecraft restart, launcher restart, or user-data cleanup.

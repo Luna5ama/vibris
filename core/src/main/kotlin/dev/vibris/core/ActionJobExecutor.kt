@@ -47,7 +47,7 @@ internal class ActionJobExecutor(
             val afterPassExecutions = ArrayList<AfterPassExecution>()
             val patchedExecutions = ArrayList<PatchedExecution>()
             val nsightExecutions = ArrayList<NsightExecution>()
-            var comparison: dev.vibris.protocol.v2.CompareReceipt? = null
+            val accumulationExecutions = ArrayList<Triple<Int, CapturePlan, dev.vibris.api.TextureAnalysisResult>>()
 
             fun resolveDeferredCapture(
                 step: CaptureProgramBuilder.ActionStep,
@@ -395,19 +395,6 @@ internal class ActionJobExecutor(
                             pendingCaptureIndices.add(step.actionIndex)
                             patchedExecutions.add(PatchedExecution(step.actionIndex, realized, result))
                         }
-                        CaptureProgramBuilder.ActionType.COMPARE -> {
-                            if (prepared == null) throw captureUnavailable()
-                            progress.accept(JobStage.JOB_STAGE_COMPARING)
-                            probe.event(job.requestId, "COMPARING")
-                            comparison = captures.compare(
-                                prepared,
-                                action.program.planningSession.materializeComparison(step.comparison!!),
-                            )
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex).setComparison(comparison).build(),
-                            )
-                        }
                         CaptureProgramBuilder.ActionType.INSPECT -> {
                             val catalog = owner.await(
                                 runtime.getCompileCatalog(job.cancellation.token()),
@@ -448,6 +435,35 @@ internal class ActionJobExecutor(
                             )
                         }
                         CaptureProgramBuilder.ActionType.RUNTIME -> {
+                            if (step.runtimeAction!!.hasAccumulateTexture()) {
+                                if (prepared == null) throw captureUnavailable()
+                                val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog())
+                                val plan = request.outputPlan()
+                                val descriptor = runtime.getResourceCatalog().resources.single {
+                                    it.logicalName == request.resource.logicalName }
+                                val pixels = (request.resource.region?.width ?: maxOf(1, descriptor.width shr request.resource.mipLevel)).toLong() *
+                                    (request.resource.region?.height ?: maxOf(1, descriptor.height shr request.resource.mipLevel))
+                                val accumulation = requireNotNull(request.accumulation)
+                                val fields = accumulation.outputs.size + 3L
+                                val bytes = pixels * 4 * fields * (descriptor.channelCount +
+                                    if (accumulation.lumaWeights.isEmpty()) 0 else 1) + plan.targets.single().outputs.size * 65536L
+                                prepared.addPlan(plan, bytes)
+                                val result = owner.await(runtime.analyzeTexture(request, prepared.sink(), job.cancellation.token()), job, deadline)
+                                captured.add(requireNotNull(result.capture)); completedCapturePlans.add(plan)
+                                accumulationExecutions.add(Triple(step.actionIndex, plan, result))
+                                pendingCaptureIndices.add(step.actionIndex)
+                                receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                    .setAccumulation(dev.vibris.protocol.v2.AccumulationReceipt.newBuilder()
+                                        .setSummaryJson(result.summaryJson)).build())
+                                return@forEach
+                            }
+                            if (step.runtimeAction!!.hasTextureStats()) {
+                                val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog())
+                                val result = owner.await(runtime.analyzeTexture(request, null, job.cancellation.token()), job, deadline)
+                                receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                    .setTextureStats(TextureAnalysisProtocol.stats(result)).build())
+                                return@forEach
+                            }
                             val response = owner.await(
                                 runtime.executeAction(RuntimeActionProtocol.toApi(step.runtimeAction!!)),
                                 job,
@@ -522,7 +538,6 @@ internal class ActionJobExecutor(
                     prepared,
                     completedCapturePlans,
                     captured,
-                    comparison,
                     generatedArtifacts,
                     afterPassExecutions.associate { execution ->
                         execution.receipt.request.target.artifactName to execution.receipt.physicalName
@@ -579,6 +594,13 @@ internal class ActionJobExecutor(
                     )
                 }
                 pendingCaptureIndices.clear()
+                accumulationExecutions.forEach { (index, plan, result) ->
+                    receiptBook.replace(index, receiptBook.success(index)
+                        .setAccumulation(dev.vibris.protocol.v2.AccumulationReceipt.newBuilder()
+                            .setSummaryJson(result.summaryJson).setCapture(captures.captureReceipt(plan,
+                                requireNotNull(result.capture), CaptureProgramBuilder.CaptureAction(index, 0, 0), committed, null)))
+                        .build())
+                }
                 activeIndices = emptyList()
                 return receiptBook.complete().addTo(committed.toBuilder()).build()
             }

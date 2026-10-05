@@ -70,6 +70,8 @@ class VibrisCoreEngine internal constructor(
         replayerRoot = replayerRoot,
         bundledReplayJava = bundledReplayJava,
     )
+
+    internal fun catalogContext(generation: Long) = executor.catalogContext(generation)
     private val delivery = TerminalDelivery()
     private val disconnectTimer: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "Vibris Disconnect Grace").apply { isDaemon = true }
@@ -516,6 +518,7 @@ class VibrisCoreEngine internal constructor(
                     failure.restoration ?: executor.restorationReceipt(),
                     failure.actionReceipts,
                     failure.preludeReceipts,
+                    failure.details,
                 ),
                 state,
                 false,

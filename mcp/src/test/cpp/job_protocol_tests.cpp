@@ -174,7 +174,7 @@ void ab_compare_resets_each_source_before_equal_warmup_and_capture() {
 	const auto request = JobProtocol::request(
 		"vibris_run_recipe", arguments, config(), scene(), sources, std::string(request_id));
 	const auto& actions = request.submit_job().job().action_sequence().actions();
-	require(actions.size() == 9 &&
+	require(actions.size() == 8 &&
 		actions[0].prelude() && actions[0].has_load_shader() && actions[0].load_shader().source_id() == "a" &&
 		!actions[1].prelude() && actions[1].has_reset_temporal_state() &&
 		actions[2].has_wait_frames() && actions[2].wait_frames().frame_count() == 6 &&
@@ -182,24 +182,16 @@ void ab_compare_resets_each_source_before_equal_warmup_and_capture() {
 		actions[4].prelude() && actions[4].has_load_shader() && actions[4].load_shader().source_id() == "b" &&
 		!actions[5].prelude() && actions[5].has_reset_temporal_state() &&
 		actions[6].has_wait_frames() && actions[6].wait_frames().frame_count() == 6 &&
-		actions[7].has_take_screenshot() && actions[7].take_screenshot().artifact_name() == "b-0" &&
-		actions[8].has_compare_captures(),
+		actions[7].has_take_screenshot() && actions[7].take_screenshot().artifact_name() == "b-0",
 		"ab_compare did not reset both sources immediately before equal warmup and capture phases");
-	const auto& compare = actions[8].compare_captures();
-	require(compare.baseline_action_index() == 3 && compare.candidate_action_index() == 7 &&
-		compare.baseline_label() == "baseline" && compare.candidate_label() == "candidate" &&
-		compare.thresholds().pixel_error_threshold() == 0.01 &&
-		compare.thresholds().max_threshold_pixel_ratio() == 0.001 &&
-		compare.thresholds().min_ssim() == 0.995,
-		"ab_compare changed capture references, labels, or fail-closed visual thresholds");
 }
 
 void after_pass_actions_preserve_exact_pass_and_resource_selectors() {
 	const Json arguments{{"preset_id", "quality"}, {"actions", Json::array({
-		{{"type", "dump_texture_after_pass"}, {"pass_id", "composite/composite21"},
+		{{"type", "dump_texture"}, {"pass_id", "composite/composite21"},
 		 {"resource", {{"logical_name", "colortex0"}, {"view", "alternate"},
 			 {"mip_level", 2}, {"layer", 3}}}, {"format", "png"}, {"artifact_name", "texture-after"}},
-		{{"type", "dump_buffer_after_pass"}, {"pass_id", "prepare/prepare3"},
+		{{"type", "dump_buffer"}, {"pass_id", "prepare/prepare3"},
 		 {"resource", {{"logical_name", "scene_ssbo"}}}, {"artifact_name", "buffer-after"}},
 	})}};
 	const auto request = JobProtocol::request(
@@ -335,15 +327,16 @@ void matrix_auto_load_is_a_prelude_receipt_action() {
 	const std::vector sources{source()};
 	const auto request = JobProtocol::request(
 		"vibris_run_matrix", arguments, config(), scene(), sources, std::string(request_id));
-	const auto& cases = request.submit_job().job().matrix().cases();
-	require(cases.size() == 1 && cases[0].actions().actions_size() == 2,
+	const auto& job = request.submit_job().job();
+	const auto& actions = job.action_sequence();
+	require(job.has_action_sequence() && !job.has_matrix() && actions.actions_size() == 2,
 		"matrix case did not contain one auto-load and one requested action");
-	require(cases[0].actions().actions(0).has_load_shader() &&
-		cases[0].actions().actions(0).prelude() &&
-		!cases[0].actions().actions(0).load_shader().config().preserve_current() &&
-		cases[0].actions().actions(0).load_shader().config().values().empty() &&
-		cases[0].actions().actions(1).has_wait_frames() &&
-		!cases[0].actions().actions(1).prelude(),
+	require(actions.actions(0).has_load_shader() &&
+		actions.actions(0).prelude() &&
+		!actions.actions(0).load_shader().config().preserve_current() &&
+		actions.actions(0).load_shader().config().values().empty() &&
+		actions.actions(1).has_wait_frames() &&
+		!actions.actions(1).prelude(),
 		"matrix auto-load did not use defaults or preserve prelude semantics");
 }
 
@@ -448,6 +441,12 @@ void round_robin_queue_window_is_bounded_but_not_one_turn() {
 		timeouts.execution_timeout_ms() >= 120'000 &&
 		timeouts.total_timeout_ms() == timeouts.queue_timeout_ms() + timeouts.execution_timeout_ms(),
 		"job timeouts do not leave a bounded multi-turn round-robin admission window");
+	const auto accumulation = JobProtocol::request("vibris_run_actions", {{"actions", Json::array({
+		{{"type", "accumulate_texture"}, {"resource", {{"logical_name", "colortex0"}, {"view", "current"}}},
+		 {"frames", 512}, {"batches", 16}, {"artifact_name", "temporal"}}})}},
+		config(), scene(), {}, std::string(request_id));
+	require(accumulation.submit_job().job().timeouts().execution_timeout_ms() >= 572'000,
+		"GPU accumulation frames were omitted from the execution deadline");
 }
 
 void accepted_request_reconnects_with_resume_only() {

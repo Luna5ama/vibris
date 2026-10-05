@@ -38,7 +38,8 @@ public abstract class MixinCompositeRenderer {
 			case DEFERRED -> ResourceCatalog.PassStage.DEFERRED;
 			case COMPOSITE -> ResourceCatalog.PassStage.COMPOSITE;
 		};
-		for (Object pass : passes) vibris$handles.add(capture.register(stage, ((VibrisPassInfo) pass).vibris$name()));
+		for (Object pass : passes) vibris$handles.add(capture.register(stage,
+			((VibrisPassInfo) pass).vibris$name(), ((VibrisPassInfo) pass).vibris$programs()));
 	}
 
 	@Inject(method = "renderAll", at = @At("HEAD"), require = 1, expect = 1)

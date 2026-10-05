@@ -89,6 +89,83 @@ import kotlin.test.assertNotNull
 
 class GlArtifactCaptureRuntimeTest {
     @Test
+    fun recordsInvalidSamplesAndIncompleteBatches() {
+        if (!System.getProperty("vibris.runtimeTest").toBoolean()) return
+        withGlContext {
+            val texture = glCreateTextures(GL_TEXTURE_2D)
+            try {
+                glTextureStorage2D(texture, 1, org.lwjgl.opengl.GL30C.GL_RGBA32F, 2, 2)
+                val options = dev.vibris.api.TextureAccumulation(15, 4, emptyList(),
+                    listOf("mean", "variance", "stderr"), "invalid")
+                val request = dev.vibris.api.TextureAnalysisRequest(CapturePlan.ResourceSelector(
+                    ResourceCatalog.ResourceKind.TEXTURE, "test", ResourceCatalog.TextureView.CURRENT, 0, 0), null, options)
+                GpuTextureAccumulator(options, null, texture, 0).use { accumulator ->
+                    val color = BufferUtils.createFloatBuffer(4)
+                    for (frame in 0 until 15) {
+                        color.clear(); color.put(if (frame == 4) Float.NaN else frame.toFloat())
+                        repeat(3) { color.put(frame.toFloat()) }; color.flip()
+                        org.lwjgl.opengl.GL44C.glClearTexImage(texture, 0, org.lwjgl.opengl.GL11C.GL_RGBA,
+                            org.lwjgl.opengl.GL11C.GL_FLOAT, color)
+                        accumulator.sample(texture, frame + 1L)
+                    }
+                    val state = accumulator.readStates(false)
+                    assertEquals(14f, state[2][0]); assertEquals(1f, state[10][0])
+                    assertEquals(1f, state[11][0]); assertEquals(4L, accumulator.screenBatchNonfiniteSamples[1][0])
+                    val files = HashMap<String, java.io.ByteArrayOutputStream>()
+                    val output = TextureAccumulationOutput.write(request, accumulator,
+                        dev.vibris.api.ArtifactSink { name -> java.io.ByteArrayOutputStream().also { files[name] = it } },
+                        dev.vibris.api.CancellationToken.none())
+                    val json = kotlinx.serialization.json.Json.parseToJsonElement(files.getValue("invalid.mean.json").toString("UTF-8"))
+                        as kotlinx.serialization.json.JsonObject
+                    val accumulation = json.getValue("accumulation") as kotlinx.serialization.json.JsonObject
+                    assertEquals("[1,3]", accumulation.getValue("incomplete_batch_indices").toString())
+                    assertEquals("false", accumulation.getValue("standard_batch_means_se").toString())
+                    assertNotNull(output.capture)
+                    assertEquals(14f, java.nio.ByteBuffer.wrap(files.getValue("invalid.valid_count.bin").toByteArray())
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).float)
+                }
+            } finally { org.lwjgl.opengl.GL11C.glDeleteTextures(texture) }
+        }
+    }
+
+    @Test
+    fun accumulatesOnGpuAndMatchesAnalyticBatchMeans() {
+        if (!System.getProperty("vibris.runtimeTest").toBoolean()) return
+        withGlContext {
+            val texture = glCreateTextures(GL_TEXTURE_2D)
+            try {
+                glTextureStorage2D(texture, 1, org.lwjgl.opengl.GL30C.GL_RGBA32F, 8, 4)
+                val options = dev.vibris.api.TextureAccumulation(64, 16, listOf(0.2, 0.7, 0.1),
+                    listOf("mean", "variance", "stderr", "flicker", "nonfinite"), "test")
+                GpuTextureAccumulator(options, CapturePlan.TextureRegion(2, 1, 4, 2), texture, 0).use { accumulator ->
+                    val color = BufferUtils.createFloatBuffer(4)
+                    for (frame in 0 until 64) {
+                        color.clear(); repeat(4) { color.put(frame.toFloat()) }; color.flip()
+                        org.lwjgl.opengl.GL44C.glClearTexImage(texture, 0, org.lwjgl.opengl.GL11C.GL_RGBA,
+                            org.lwjgl.opengl.GL11C.GL_FLOAT, color)
+                        assertEquals(frame == 63, accumulator.sample(texture, frame + 1L))
+                    }
+                    val state = accumulator.readStates(false)
+                    assertEquals(31.5, state[0][0].toDouble(), 1e-4)
+                    assertEquals(64f, state[2][0])
+                    assertEquals(64.0 * 65 / 12, state[1][0].toDouble() / 63, 1e-4)
+                    assertEquals(16.0 * 16 * 17 / 12 / 16,
+                        state[6][0].toDouble() / 15 / 16, 1e-4)
+                    assertEquals(63f, state[9][0]); assertEquals(0f, state[10][0])
+                    assertEquals(31.5, accumulator.readStates(true)[0][0].toDouble(), 1e-4)
+                    assertEquals(1.5, accumulator.screenBatchMeans[0][0]!!, 1e-4)
+                    assertEquals(61.5, accumulator.screenBatchMeans[15][0]!!, 1e-4)
+                    for (channel in 0 until 4) {
+                        assertEquals(8L, accumulator.screenBatchPixelCounts[0][channel])
+                        assertEquals(1.5, accumulator.screenBatchMeans[0][channel]!!, 1e-4)
+                    }
+                    assertEquals(0, org.lwjgl.opengl.GL11C.glGetError())
+                }
+            } finally { org.lwjgl.opengl.GL11C.glDeleteTextures(texture) }
+        }
+    }
+
+    @Test
     fun capturesTypedArtifactsAndRestoresPixelPackState() {
         if (!System.getProperty("vibris.runtimeTest").toBoolean()) return
 
@@ -129,6 +206,13 @@ class GlArtifactCaptureRuntimeTest {
                     CapturePlan.ArtifactFormat.BIN,
                     rawOutput,
                 )
+                GlArtifactCapture.readTexture(texture, 0, CapturePlan.TextureRegion(1, 1, 1, 1)).use { crop ->
+                    val bytes = ByteArrayOutputStream()
+                    crop.writeBin(bytes)
+                    assertContentEquals(rawOutput.toByteArray().copyOfRange(12, 16), bytes.toByteArray())
+                    assertEquals(2, crop.metadata.sourceWidth)
+                    assertEquals(1, crop.metadata.width)
+                }
                 assertEquals(2, rawMetadata.width)
                 assertEquals(2, rawMetadata.height)
                 assertEquals(4, rawMetadata.channelCount)

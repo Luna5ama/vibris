@@ -1,9 +1,11 @@
 #include "profile_matrix_workflow.hpp"
+#include "experiment_summary.hpp"
 #include "config_document.hpp"
 #include "state_error.hpp"
 #include "workspace_source_fixture.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <array>
 #include <algorithm>
 #include <filesystem>
@@ -57,6 +59,7 @@ Json matrix(const std::size_t count, std::string execution = "sync") {
 		axis.push_back(id);
 	}
 	return {{"recipe", "profile_matrix"},
+		{"order", "sequential"},
 		{"sources", Json::array({{{"id", "source"}, {"kind", "workspace"}}})},
 		{"configs", std::move(configs)},
 		{"matrix", {{"sources", Json::array({"source"})}, {"configs", std::move(axis)}}},
@@ -627,6 +630,73 @@ void failed_cleanup_warns_and_retries_on_next_creation() {
 	require(!std::filesystem::exists(jobs / oldest), "Next creation did not retry the failed deletion.");
 }
 
+void experiment_order_and_statistics() {
+	WorkspaceFixture workspace;
+	std::vector<std::string> order;
+	DurableJobWorkflow workflow(workspace.worktree(), std::string(workspace_id),
+		[&](DurableJobStepExecution execution) -> ToolOutcome {
+			order.push_back(execution.arguments.at("preset_id").get<std::string>() + ":" +
+				execution.arguments.at("__vibris_config_id").get<std::string>());
+			return profile_success(execution);
+		});
+	auto args = matrix(3);
+	args["order"] = "palindrome";
+	args["rounds"] = 2;
+	args["__vibris_presets"] = Json::array({
+		{{"preset_id", "a"}, {"__vibris_scene_context", scene()}},
+		{{"preset_id", "b"}, {"__vibris_scene_context", scene()}}});
+	const auto result = std::get<Json>(workflow.start("vibris_run_recipe", args, config()));
+	require(result.at("result").at("cases").size() == 24, "matrix omitted scenes or repetitions");
+	for (std::size_t index = 0; index < order.size(); ++index) {
+		const std::array expected{1, 2, 3, 3, 2, 1};
+		require(order[index] == std::string(index < 12 ? "a:" : "b:") + "config-" + std::to_string(expected[index % 6]),
+			"palindrome or preset ordering changed");
+	}
+	Json cases = Json::array();
+	for (int round = 0; round < 3; ++round) {
+		for (const auto* source : {"base", "candidate"}) {
+			const auto value = std::string_view(source) == "base" ? 100.0 : 110.0 + 10.0 * round;
+			cases.push_back({{"preset_id", "scene"}, {"source_id", source}, {"config_id", "config"},
+				{"round", round}, {"status", "passed"}, {"provenance", {{"scene_sha256", round == 2 ? "changed" : "same"}}},
+				{"metrics", {{"metrics", Json::array({{{"metric_id", "metric"}, {"p50_ns", value},
+					{"p95_ns", value}, {"average_ns", value}}})}}}});
+		}
+	}
+	const auto summary = vibris::mcp::summarize_experiment(cases,
+		{{"rounds", 3}, {"baseline", {{"source_id", "base"}, {"config_id", "config"}}}});
+	const auto& delta = summary.at("delta_vs_baseline")[0];
+	require(std::abs(delta.at("median").get<double>() - 0.2) < 1e-12, "paired round median is wrong");
+	require(std::abs(delta.at("ci95").at("upper").get<double>() - (0.2 + 4.3026527299 * 0.1 / std::sqrt(3.0))) < 1e-10,
+		"paired mean t interval is wrong");
+	require(!summary.at("consistency").at("consistent").get<bool>(), "provenance mismatch was hidden");
+	for (auto& item : cases) {
+		auto program = item["metrics"]["metrics"][0];
+		program["program_id"] = "compute";
+		program["main_source"] = "/pass/compute.comp.glsl";
+		item["metrics"]["metrics"].push_back(std::move(program));
+	}
+	const auto deduplicated = vibris::mcp::summarize_experiment(cases, {{"rounds", 3}});
+	for (const auto& row : deduplicated.at("table")) {
+		require(row.at("runs") == 3, "aggregate/program duplicates inflated the run count");
+		require(row.at("main_source") == "/pass/compute.comp.glsl", "program metadata was lost during deduplication");
+	}
+	require(deduplicated.at("metric_conflicts").empty(), "identical metrics were reported as conflicting");
+	cases[0]["metrics"]["metrics"][1]["p50_ns"] = 101.0;
+	const auto conflicting = vibris::mcp::summarize_experiment(cases, {{"rounds", 3}});
+	require(conflicting.at("metric_conflicts").size() == 1, "different metric values were silently merged");
+	for (const auto& row : conflicting.at("table")) {
+		if (row.at("source_id") == "base") require(row.at("runs") == 2, "conflicting run remained in statistics");
+	}
+	args["order"] = "randomized";
+	args["random_seed"] = 42;
+	order.clear();
+	static_cast<void>(workflow.start("vibris_run_recipe", args, config()));
+	const auto first = order;
+	order.clear();
+	static_cast<void>(workflow.start("vibris_run_recipe", args, config()));
+	require(first == order, "randomized order is not reproducible with a fixed seed");
+}
+
 } // namespace
 
 int main() {
@@ -645,6 +715,7 @@ int main() {
 		server_restart_resubmits_current_step_once();
 		creation_retains_twenty_inactive_jobs();
 		failed_cleanup_warns_and_retries_on_next_creation();
+		experiment_order_and_statistics();
 		std::cout << "PASS DurableWorkflowCheckpointResume\n";
 		return 0;
 	} catch (const std::exception& error) {

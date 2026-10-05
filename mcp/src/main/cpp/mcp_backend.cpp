@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -16,6 +17,10 @@
 #include <utility>
 
 #include "config_document.hpp"
+#include "name_suggestions.hpp"
+#include "artifact_prune.hpp"
+#include "preset_previews.hpp"
+#include "image_compare.hpp"
 #include "profile_matrix_workflow.hpp"
 #include "result_mapper.hpp"
 #include "scene_context_resolver.hpp"
@@ -131,6 +136,8 @@ private:
                   }) {}
 
         ToolOutcome dispatch(std::string_view name, const Json& arguments) {
+            if (name == "vibris_preview_presets") return preview_presets(arguments);
+            if (name == "vibris_compare") return compare_images(binding_.root, arguments);
             if (name == "mcp_vibiris_nsight_analyze") {
                 return analyze_nsight_bundle(
                     binding_.root,
@@ -152,8 +159,10 @@ private:
                          {"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(unary_wait).count()}}};
                 }
                 const bool durable = arguments.value("execution", std::string("sync")) == "async" ||
+                    arguments.contains("presets") ||
                     (name == "vibris_run_recipe" &&
                         (arguments.value("recipe", std::string{}) == "profile_matrix" ||
+                         arguments.value("recipe", std::string{}) == "benchmark_ab" ||
                          arguments.value("recipe", std::string{}) == "compile_validate"));
                 if (durable) return start_durable_job(name, arguments);
                 if (jobs_.running()) {
@@ -164,7 +173,31 @@ private:
                         "vibris_run_actions or vibris_run_matrix call. This is not the Core runtime lease gate.",
                         true};
                 }
-                return run_job(name, arguments);
+                auto outcome = run_job(name, arguments);
+                Json failed;
+                auto* result = std::get_if<Json>(&outcome);
+                auto* failure = std::get_if<ToolFailure>(&outcome);
+                if (failure) {
+                    failed = {{"code", failure->code}, {"message", failure->message},
+                        {"retryable", failure->retryable}, {"details", failure->details}};
+                    result = &failed;
+                }
+                if (result && result->is_object()) {
+                    auto id = failure ? failure->details.value("job_id", std::string{}) : result->value("job_id", std::string{});
+                    if (!detail::is_uuid(id) || fs::exists(binding_.root / ".vibris" / "jobs" / id)) id = detail::generate_uuid();
+                    const auto directory = managed_output_directory(binding_.root,
+                        binding_.root / ".vibris" / "jobs" / id);
+                    const auto path = directory / "result.json";
+                    const auto temporary = directory / "result.json.tmp";
+                    std::ofstream file(temporary, std::ios::binary);
+                    file << result->dump();
+                    file.close();
+                    if (!file) throw StateError("RESULT_WRITE_FAILED", "Cannot persist the full synchronous result.");
+                    fs::rename(temporary, path);
+                    if (failure) failure->details["full_result_path"] = path.string();
+                    else (*result)["full_result_path"] = path.string();
+                }
+                return outcome;
             }
             return ToolFailure{"INTERNAL_ERROR", "The validated tool was not dispatched.", false};
         }
@@ -251,8 +284,9 @@ private:
                 [this, request = std::move(request)](auto completion) mutable {
                     return client().list_presets(request, std::move(completion));
                 },
-                [&arguments](const auto& response) -> ToolOutcome {
+                  [this, &arguments](const auto& response) -> ToolOutcome {
                     auto result = ResultMapper::list_presets(response);
+                    attach_preset_thumbnails(binding_.root, result);
                     if (arguments.contains("preset_id") && result.contains("presets") && result["presets"].is_array()) {
                         const auto filter = arguments["preset_id"].get<std::string>();
                         auto& presets = result["presets"];
@@ -271,6 +305,42 @@ private:
                     }
                     return result;
                 });
+        }
+
+        ToolOutcome preview_presets(const Json& arguments) {
+            Json filter = Json::object();
+            if (arguments.contains("tags")) filter["tags"] = arguments["tags"];
+            auto listed = list_presets(filter);
+            if (const auto* failure = std::get_if<ToolFailure>(&listed)) return *failure;
+            auto presets = std::get<Json>(listed).at("presets");
+            const auto version = std::get<Json>(listed).value("vibris_version", std::string{});
+            if (version.empty()) return ToolFailure{"PREVIEW_VERSION_MISSING", "Runtime did not report its Vibris version.", false};
+            if (arguments.contains("preset_ids")) {
+                for (const auto& id : arguments["preset_ids"])
+                    if (std::none_of(presets.begin(), presets.end(), [&](const Json& preset) { return preset["preset_id"] == id; })) {
+                        std::vector<std::string> available;
+                        for (const auto& preset : presets) available.push_back(preset.at("preset_id").get<std::string>());
+                        return ToolFailure{"INVALID_PRESET", "Requested preview preset was not found.", false,
+                            {{"preset_id", id}, {"suggestions", name_suggestions(id.get<std::string>(), available)}}};
+                    }
+                const auto& ids = arguments["preset_ids"];
+                presets.erase(std::remove_if(presets.begin(), presets.end(), [&](const Json& preset) {
+                    return std::find(ids.begin(), ids.end(), preset["preset_id"]) == ids.end(); }), presets.end());
+            }
+            Json preview{{"presets", presets}, {"vibris_version", version}, {"tile_width", arguments.value("tile_width", 384)}};
+            Json missing = Json::array();
+            for (const auto& preset : presets) if (arguments.value("refresh", false) ||
+                !preset_preview_cached(binding_.root, preset, preview["tile_width"].get<int>(), version)) missing.push_back(preset["preset_id"]);
+            if (missing.empty()) return finish_preset_previews(binding_.root, preview, Json::array());
+            Json matrix{{"presets", missing}, {"execution", arguments.value("execution", std::string("sync"))},
+                {"sources", Json::array({{{"id", "workspace"}, {"kind", "workspace"}}})},
+                {"configs", Json::array({{{"id", "default"}, {"values", Json::object()}}})},
+                {"matrix", {{"sources", Json::array({"workspace"})}, {"configs", Json::array({"default"})}}},
+                {"restore_state", {{"on_success", true}, {"on_error", true}}},
+                {"actions", Json::array({{{"type", "wait_frames"}, {"frames", 32}},
+                    {{"type", "take_screenshot"}, {"artifact_name", "preview"}, {"format", "png"}}})},
+                {"__vibris_preview", preview}};
+            return start_durable_job("vibris_run_matrix", matrix);
         }
 
         ToolOutcome with_scene(const Json& arguments, const SceneContinuation& continuation) {
@@ -381,6 +451,11 @@ private:
         }
 
         ToolOutcome artifacts(const Json& arguments) {
+            if (arguments.at("operation") == "prune") {
+                return prune_artifacts(binding_.root, arguments, [this](const Json& request) {
+                    return artifacts(request);
+                });
+            }
             control::ManageArtifactsRequest request;
             request.set_workspace_id(workspace_id_);
             const auto operation = arguments.at("operation").get<std::string>();
@@ -419,6 +494,11 @@ private:
                      {"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(unary_wait).count()}}};
             }
             const auto context = scene_from_json(execution.arguments.at("__vibris_scene_context"));
+            execution.config.save_id = context.save_id();
+            execution.config.dimension_id = context.dimension_id();
+            execution.config.time_preset_id = context.time_preset_id();
+            execution.config.camera_preset_id = context.camera_preset_id();
+            execution.config.fov = context.fov();
             return unary<control::GetServerInfoResponse>(
                 [this](auto completion) { return client().get_server_info(std::move(completion)); },
                 [this, &execution, &context](const auto& response) -> ToolOutcome {
@@ -437,11 +517,43 @@ private:
                     auto outcome = SynchronousJobRunner(client(), source_handler_, execution.config).run(
                         execution.tool_name, execution.arguments, response.server(), context, control);
                     artifact_link_.rewrite(outcome);
+                    compare_recipe_captures(binding_.root, execution.arguments, outcome);
                     return outcome;
                 });
         }
 
         ToolOutcome start_durable_job(std::string_view name, const Json& arguments) {
+            if (arguments.contains("presets")) {
+                control::ListPresetsRequest request;
+                return unary<control::ListPresetsResponse>(
+                    [this, request](auto completion) { return client().list_presets(request, std::move(completion)); },
+                    [this, name, &arguments](const auto& response) -> ToolOutcome {
+                        auto enriched = arguments;
+                        enriched["__vibris_presets"] = Json::array();
+                        std::optional<JobContext> first_config;
+                        for (const auto& id : arguments.at("presets")) {
+                            const auto preset = SceneContextResolver::resolve_preset(id.template get<std::string>(), response);
+                            auto config = config_from_preset(preset, workspace_id_);
+                            detail::validate_config(config);
+                            control::ValidateContextRequest validation;
+                            *validation.mutable_context() = preset.context();
+                            const auto valid = unary<control::ValidateContextResponse>(
+                                [this, validation](auto completion) {
+                                    return client().validate_context(validation, std::move(completion));
+                                }, [](const auto& checked) -> ToolOutcome {
+                                    if (!checked.valid()) return ToolFailure{"INVALID_PRESET", "Scene context was rejected.", false,
+                                        ResultMapper::validation(checked)};
+                                    return Json::object();
+                                });
+                            if (std::holds_alternative<ToolFailure>(valid)) return valid;
+                            enriched["__vibris_presets"].push_back({{"preset_id", preset.preset_id()},
+                                {"__vibris_scene_context", scene_json(preset.context())},
+                                {"__vibris_preset", preset_json(preset)}});
+                            if (!first_config) first_config = std::move(config);
+                        }
+                        return jobs_.start(name, enriched, *first_config);
+                    });
+            }
             return with_scene(arguments, [this, name, &arguments](const auto& config, const auto& preset) -> ToolOutcome {
                 auto enriched = arguments;
                 enriched["__vibris_scene_context"] = scene_json(preset.context());
@@ -482,6 +594,7 @@ private:
                             auto outcome = SynchronousJobRunner(client(), source_handler_, config).run(
                                 name, enriched, response.server(), context);
                             artifact_link_.rewrite(outcome);
+                            compare_recipe_captures(binding_.root, enriched, outcome);
                             return outcome;
                         });
                 });
@@ -553,7 +666,7 @@ public:
             runtime.attach_scope(outcome);
             return outcome;
         } catch (const StateError& error) {
-            return ToolFailure{std::string(error.code()), error.what(), error.retryable()};
+            return ToolFailure{std::string(error.code()), error.what(), error.retryable(), error.details()};
         } catch (const std::exception& error) {
             std::cerr << "vibris-mcp tool failure: " << bounded(error.what()) << '\n';
             return ToolFailure{"INTERNAL_ERROR", "Tool execution failed.", false};

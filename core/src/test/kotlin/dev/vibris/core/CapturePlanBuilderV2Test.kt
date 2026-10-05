@@ -12,9 +12,45 @@ import dev.vibris.protocol.v2.ResourceSelector
 import dev.vibris.protocol.v2.TextureView
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class CapturePlanBuilderV2Test {
+    @Test
+    fun cropsAtMipDimensionsAndScalesReservedBytes() {
+        val resource = CapturePlan.ResourceSelector(ResourceCatalog.ResourceKind.TEXTURE,
+            "iris_custom_image.volume", ResourceCatalog.TextureView.CURRENT, 0, 0)
+        fun plan(selector: CapturePlan.ResourceSelector) = CapturePlanBuilder.plan(listOf(
+            CapturePlanBuilder.target(selector, CapturePlan.ArtifactFormat.BIN, "crop")), catalog())
+        val full = plan(resource)
+        val cropped = plan(resource.copy(region = CapturePlan.TextureRegion(1, 1, 1, 1)))
+        assertEquals(144L, full.estimatedBytes - cropped.estimatedBytes)
+        val failure = assertThrows(RuntimeJobExecutor.Failure::class.java) {
+            plan(resource.copy(mipLevel = 1, region = CapturePlan.TextureRegion(1, 0, 1, 1)))
+        }
+        assertTrue(failure.message!!.contains("1x1"))
+    }
+
+    @Test
+    fun resolvesAnalysisRequestsAndSuggestsCanonicalImageNames() {
+        val action = Action.newBuilder().setTextureStats(dev.vibris.protocol.v2.TextureStats.newBuilder()
+            .setResource(ResourceSelector.newBuilder().setLogicalName("iris_custom_image.volume")
+                .setView(TextureView.TEXTURE_VIEW_CURRENT))
+            .setRegion(dev.vibris.protocol.v2.TextureRegion.newBuilder().setX(1).setY(1).setWidth(1).setHeight(1)))
+            .build()
+        val request = TextureAnalysisProtocol.request(action, catalog())
+        assertEquals(CapturePlan.TextureRegion(1, 1, 1, 1), request.resource.region)
+        assertEquals(null, request.passId)
+        assertEquals("iris_custom_image.uimg_rcGuideEval", NameSuggestions.suggest("usam_rcGuideEval",
+            listOf("colortex0", "iris_custom_image.uimg_rcGuideEval", "iris_ssbo_6")).first())
+        val receipt = TextureAnalysisProtocol.stats(dev.vibris.api.TextureAnalysisResult(7,
+            listOf(dev.vibris.api.TextureChannelStats(0, 0, null, null, null, null, null, null, null, 2, 1, 1, 0)),
+            "{}", null))
+        assertEquals(7L, receipt.frameId)
+        assertEquals(2L, receipt.channelsList.single().nan)
+        assertTrue(!receipt.channelsList.single().hasMean())
+    }
+
     @Test
     fun expandsThreeDimensionalPngAndBufferSidecarsDeterministically() {
         val catalog = catalog()

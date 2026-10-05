@@ -12,7 +12,7 @@ class ProtocolInteropTest {
 
     @Test
     void helloPingPong() throws Exception {
-        assertScenario("hello-ping-pong", 55051, 2, 1, "protocol-c001");
+        assertScenario("hello-ping-pong", 55051, 3, 1, "protocol-c001");
     }
 
     @Test

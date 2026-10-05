@@ -83,4 +83,9 @@ interface VibrisRuntimeHost : AutoCloseable {
     )
 
     override fun close()
+
+    fun analyzeTexture(request: dev.vibris.api.TextureAnalysisRequest, sink: ArtifactSink?, cancellation: CancellationToken)
+        : CompletionStage<dev.vibris.api.TextureAnalysisResult> = java.util.concurrent.CompletableFuture.failedFuture(
+            UnsupportedOperationException("Texture analysis is unavailable"),
+        )
 }

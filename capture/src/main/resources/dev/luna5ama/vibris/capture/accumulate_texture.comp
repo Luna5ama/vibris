@@ -1,0 +1,132 @@
+#version 450 core
+layout(local_size_x = 16, local_size_y = 8) in;
+layout(binding = 0) uniform SOURCE_SAMPLER sourceTexture;
+layout(rgba32f, binding = 0) uniform image2DArray stateImage;
+layout(r32f, binding = 1) uniform image2DArray lumaImage;
+layout(std430, binding = 0) buffer ScreenPartials { double partials[]; };
+uniform ivec2 extent;
+uniform ivec2 origin;
+uniform int mipLevel;
+uniform int batchLength;
+uniform int batchEnd;
+uniform int channelCount;
+uniform int hasLuma;
+uniform vec3 lumaWeights;
+uniform float nativeScale;
+shared dvec4 sums[128];
+shared dvec4 counts[128];
+shared dvec2 lumas[128];
+shared dvec4 missing[128];
+shared double lumaMissing[128];
+
+vec4 readState(ivec2 p, int index, bool luma) {
+    return luma ? imageLoad(lumaImage, ivec3(p, index)) : imageLoad(stateImage, ivec3(p, index));
+}
+void writeState(ivec2 p, int index, vec4 value, bool luma) {
+    if (luma) imageStore(lumaImage, ivec3(p, index), value);
+    else imageStore(stateImage, ivec3(p, index), value);
+}
+
+// Layers: mean, M2, count, batch sum/count, batch mean/M2/count, previous,
+// flicker sum, nonfinite count, incomplete batches, flicker count, previous-valid.
+dvec4 updateState(ivec2 p, vec4 x, bool luma, out dvec4 validPixels, out dvec4 missingSamples) {
+    bvec4 finite = bvec4(!isnan(x.x) && !isinf(x.x), !isnan(x.y) && !isinf(x.y),
+        !isnan(x.z) && !isinf(x.z), !isnan(x.w) && !isinf(x.w));
+    vec4 valid = vec4(finite);
+    vec4 safeX = mix(vec4(0), x, finite);
+    vec4 count = readState(p, 2, luma) + valid;
+    vec4 mean = readState(p, 0, luma);
+    vec4 delta = safeX - mean;
+    vec4 nextMean = mean + valid * delta / max(count, vec4(1));
+    writeState(p, 0, nextMean, luma);
+    writeState(p, 1, readState(p, 1, luma) + valid * delta * (safeX - nextMean), luma);
+    writeState(p, 2, count, luma);
+    writeState(p, 10, readState(p, 10, luma) + (vec4(1) - valid), luma);
+    vec4 previous = readState(p, 8, luma);
+    vec4 pairValid = valid * readState(p, 13, luma);
+    writeState(p, 9, readState(p, 9, luma) + pairValid * abs(safeX - previous), luma);
+    writeState(p, 12, readState(p, 12, luma) + pairValid, luma);
+    writeState(p, 8, safeX, luma);
+    writeState(p, 13, valid, luma);
+    vec4 batchSum = readState(p, 3, luma) + safeX;
+    vec4 batchCount = readState(p, 4, luma) + valid;
+    if (batchEnd == 0) {
+        writeState(p, 3, batchSum, luma);
+        writeState(p, 4, batchCount, luma);
+        validPixels = dvec4(0);
+        missingSamples = dvec4(0);
+        return dvec4(0);
+    }
+    vec4 batchValid = vec4(greaterThan(batchCount, vec4(0)));
+    vec4 batchMean = batchSum / max(batchCount, vec4(1));
+    vec4 n = readState(p, 7, luma) + batchValid;
+    vec4 oldMean = readState(p, 5, luma);
+    vec4 batchDelta = batchMean - oldMean;
+    vec4 newMean = oldMean + batchValid * batchDelta / max(n, vec4(1));
+    writeState(p, 5, newMean, luma);
+    writeState(p, 6, readState(p, 6, luma) + batchValid * batchDelta * (batchMean - newMean), luma);
+    writeState(p, 7, n, luma);
+    writeState(p, 11, readState(p, 11, luma) + vec4(notEqual(batchCount, vec4(batchLength))), luma);
+    writeState(p, 3, vec4(0), luma);
+    writeState(p, 4, vec4(0), luma);
+    validPixels = dvec4(batchValid);
+    missingSamples = dvec4(vec4(batchLength) - batchCount);
+    return dvec4(batchMean * batchValid);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    uint local = gl_LocalInvocationIndex;
+    sums[local] = dvec4(0);
+    counts[local] = dvec4(0);
+    lumas[local] = dvec2(0);
+    missing[local] = dvec4(0);
+    lumaMissing[local] = 0;
+    if (all(lessThan(p, extent))) {
+        vec4 x = vec4(texelFetch(sourceTexture, p + origin, mipLevel)) * nativeScale;
+        for (int c = channelCount; c < 4; ++c) x[c] = 0;
+        dvec4 validPixels;
+        dvec4 missingSamples;
+        sums[local] = updateState(p, x, false, validPixels, missingSamples);
+        counts[local] = validPixels;
+        missing[local] = missingSamples;
+        if (hasLuma != 0) {
+            dvec4 lumaValid;
+            dvec4 lumaInvalid;
+            dvec4 lumaSum = updateState(p, vec4(dot(x.rgb, lumaWeights)), true, lumaValid, lumaInvalid);
+            lumas[local] = dvec2(lumaSum.x, lumaValid.x);
+            lumaMissing[local] = lumaInvalid.x;
+        }
+    }
+    if (batchEnd == 0) return;
+    barrier();
+    for (uint stride = 64; stride > 0; stride >>= 1) {
+        if (local < stride) {
+            sums[local] += sums[local + stride];
+            counts[local] += counts[local + stride];
+            lumas[local] += lumas[local + stride];
+            missing[local] += missing[local + stride];
+            lumaMissing[local] += lumaMissing[local + stride];
+        }
+        barrier();
+    }
+    if (local == 0) {
+        uint group = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        // NVIDIA miscompiles dynamic indexing of these shared double-vector components.
+        partials[group * 15 + 0] = sums[0].x;
+        partials[group * 15 + 1] = sums[0].y;
+        partials[group * 15 + 2] = sums[0].z;
+        partials[group * 15 + 3] = sums[0].w;
+        partials[group * 15 + 4] = counts[0].x;
+        partials[group * 15 + 5] = counts[0].y;
+        partials[group * 15 + 6] = counts[0].z;
+        partials[group * 15 + 7] = counts[0].w;
+        partials[group * 15 + 10] = missing[0].x;
+        partials[group * 15 + 11] = missing[0].y;
+        partials[group * 15 + 12] = missing[0].z;
+        partials[group * 15 + 13] = missing[0].w;
+        partials[group * 15 + 8] = lumas[0].x;
+        partials[group * 15 + 9] = lumas[0].y;
+        partials[group * 15 + 14] = lumaMissing[0];
+    }
+}

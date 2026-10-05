@@ -5,10 +5,11 @@ import java.security.MessageDigest
 
 /** Exact resources and named render-pass boundaries exposed by the active pipeline. */
 @JvmRecord
-data class ResourceCatalog(
+data class ResourceCatalog @JvmOverloads constructor(
     @field:DefensiveSnapshot val resources: List<ResourceDescriptor>,
     @field:DefensiveSnapshot val passes: List<PassDescriptor>,
     val mappingSha256: String,
+    val shaderGeneration: Long = 0,
 ) {
     init {
         require(resources.zipWithNext().all { (left, right) -> RESOURCE_ORDER.compare(left, right) < 0 }) {
@@ -30,12 +31,13 @@ data class ResourceCatalog(
     }
 
     @JvmRecord
-    data class PassDescriptor(
+    data class PassDescriptor @JvmOverloads constructor(
         val passId: String,
         val stage: PassStage,
         val programId: String,
         val order: Int,
         @field:DefensiveSnapshot val readableResources: List<String>,
+        @field:DefensiveSnapshot val programs: List<PassProgram> = emptyList(),
     ) {
         init {
             require(PROGRAM_ID.matches(programId)) { "programId must be a canonical program identifier" }
@@ -51,23 +53,29 @@ data class ResourceCatalog(
 
         companion object {
             @JvmStatic
+            @JvmOverloads
             fun of(
                 stage: PassStage,
                 programId: String,
                 order: Int,
                 readableResources: Collection<String>,
+                programs: Collection<PassProgram> = emptyList(),
             ): PassDescriptor = PassDescriptor(
                 "${stage.id}/$programId",
                 stage,
                 programId,
                 order,
                 readableResources.sorted(),
+                programs.toList(),
             )
         }
     }
 
     @JvmRecord
-    data class ResourceDescriptor(
+    data class PassProgram(val programId: String, val stage: String, val entryFile: String, val mainSource: String)
+
+    @JvmRecord
+    data class ResourceDescriptor @JvmOverloads constructor(
         val logicalName: String,
         val kind: ResourceKind,
         @field:DefensiveSnapshot val availableViews: List<TextureView>,
@@ -89,6 +97,9 @@ data class ResourceCatalog(
         val componentBits: Int,
         val readbackFormat: String,
         val readbackType: String,
+        val region: CapturePlan.TextureRegion? = null,
+        val sourceWidth: Int = width,
+        val sourceHeight: Int = height,
     ) {
         init {
             require(isLogicalName(logicalName)) { "logicalName must be a canonical logical resource name" }
@@ -118,6 +129,7 @@ data class ResourceCatalog(
 
         companion object {
             @JvmStatic
+            @JvmOverloads
             fun of(
                 logicalName: String,
                 kind: ResourceKind,
@@ -140,6 +152,9 @@ data class ResourceCatalog(
                 componentBits: Int,
                 readbackFormat: String,
                 readbackType: String,
+                region: CapturePlan.TextureRegion? = null,
+                sourceWidth: Int = width,
+                sourceHeight: Int = height,
             ): ResourceDescriptor = ResourceDescriptor(
                 logicalName,
                 kind,
@@ -162,6 +177,9 @@ data class ResourceCatalog(
                 componentBits,
                 readbackFormat,
                 readbackType,
+                region,
+                sourceWidth,
+                sourceHeight,
             )
         }
     }
@@ -208,13 +226,15 @@ data class ResourceCatalog(
         private val RESOURCE_ORDER = compareBy<ResourceDescriptor>(ResourceDescriptor::logicalName)
 
         @JvmStatic
-        fun of(resources: Collection<ResourceDescriptor>, passes: Collection<PassDescriptor>): ResourceCatalog {
+        @JvmOverloads
+        fun of(resources: Collection<ResourceDescriptor>, passes: Collection<PassDescriptor>, shaderGeneration: Long = 0): ResourceCatalog {
             val orderedResources = resources.sortedWith(RESOURCE_ORDER)
             val orderedPasses = passes.sortedBy(PassDescriptor::order)
             return ResourceCatalog(
                 orderedResources,
                 orderedPasses,
                 stableMappingHash(orderedResources, orderedPasses),
+                shaderGeneration,
             )
         }
 
@@ -246,6 +266,13 @@ data class ResourceCatalog(
                 digest.updateCount(pass.order)
                 digest.updateCount(pass.readableResources.size)
                 pass.readableResources.forEach { resource -> digest.updateField(resource) }
+                digest.updateCount(pass.programs.size)
+                pass.programs.forEach { program ->
+                    digest.updateField(program.programId)
+                    digest.updateField(program.stage)
+                    digest.updateField(program.entryFile)
+                    digest.updateField(program.mainSource)
+                }
             }
             return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
         }

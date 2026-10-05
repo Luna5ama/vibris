@@ -72,7 +72,7 @@ public:
         SourceLimits limits, SourceDestinationLayout layout = SourceDestinationLayout::pending_directory,
         std::function<void()> after_workspace_archive = {});
     [[nodiscard]] PreparedSource prepare_workspace() const;
-    [[nodiscard]] PreparedSource prepare_commit(std::string_view revision) const;
+    [[nodiscard]] PreparedSource prepare_commit(std::string_view revision, const std::filesystem::path& patch = {}) const;
 
 private:
     std::filesystem::path workspace_root_;

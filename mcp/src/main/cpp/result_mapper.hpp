@@ -3,6 +3,7 @@
 #include "vibris_control.pb.h"
 
 #include <nlohmann/json_fwd.hpp>
+#include <string_view>
 
 namespace google::protobuf {
 class Message;
@@ -26,6 +27,8 @@ public:
     [[nodiscard]] static nlohmann::json server_message(
         const ::vibris::control::v2::ServerMessage& response);
     static void finalize_provenance(nlohmann::json& result);
+    [[nodiscard]] static nlohmann::json agent_projection(
+        std::string_view tool, nlohmann::json result, const nlohmann::json& arguments);
 };
 
 }

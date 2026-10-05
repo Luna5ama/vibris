@@ -82,4 +82,9 @@ interface VibrisRuntimeAdapter : AutoCloseable {
     )
 
     override fun close()
+
+    fun analyzeTexture(request: TextureAnalysisRequest, sink: ArtifactSink?, cancellation: CancellationToken)
+        : CompletionStage<TextureAnalysisResult> = CompletableFuture.failedFuture(
+            UnsupportedOperationException("Texture analysis is unavailable"),
+        )
 }

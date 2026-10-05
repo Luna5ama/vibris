@@ -20,13 +20,19 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.EnumMap;
 
 @Mixin(value = ComputeProgram.class, remap = false)
-public abstract class MixinComputeProgram {
+public abstract class MixinComputeProgram implements dev.vibris.mod.VibrisProgramInfo {
 	@Unique private ComputeProgramTiming vibris$timing;
+	@Unique private java.util.List<dev.vibris.api.ResourceCatalog.PassProgram> vibris$programs = java.util.List.of();
+
+	@Override public java.util.List<dev.vibris.api.ResourceCatalog.PassProgram> vibris$programs() {
+		return vibris$programs;
+	}
 
 	@Inject(method = "<init>", at = @At("RETURN"), require = 1, expect = 1)
 	private void vibris$initializeTiming(String name, int program, ProgramUniforms uniforms,
 		ProgramSamplers samplers, ProgramImages images, EnumMap<ShaderType, String> sources, CallbackInfo ci) {
 		vibris$timing = new ComputeProgramTiming(name, sources.get(ShaderType.COMPUTE));
+		vibris$programs = java.util.List.of(dev.vibris.mod.PassPrograms.describe(name, "compute", sources.get(ShaderType.COMPUTE)));
 	}
 
 	@Redirect(method = "dispatch", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/gl/IrisRenderSystem;dispatchCompute(Ljava/util/EnumMap;Ljava/lang/String;Lorg/joml/Vector3i;)V"), require = 1, expect = 1)

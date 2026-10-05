@@ -13,6 +13,15 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 
 class ComputeProgramTimingTest {
 	@Test
+	void programEntryIsTheWrapperRatherThanTheFirstInclude() {
+		String source = ShaderSourceMap.appendMetadata("#line 2 2\nvoid main() {}", Map.of(
+			0, "/Base.glsl", 1, "/world0/composite19.csh", 2, "/pass/GIPathGuidePrepare.comp.glsl"));
+		var program = PassPrograms.describe("composite19", "compute", source);
+		assertEquals("/world0/composite19.csh", program.entryFile());
+		assertEquals("/pass/GIPathGuidePrepare.comp.glsl", program.mainSource());
+	}
+
+	@Test
 	void preservesGroupedProgramNamesAndResolvesTheMainSource() {
 		List<String> groupedPrograms = List.of(
 			"begin1_a", "begin1_b", "begin2_a", "begin2_b", "begin3_a", "composite13_a", "composite34");
@@ -24,7 +33,7 @@ class ComputeProgramTimingTest {
 				.direct(new Vector3i(120, 68, 1));
 
 			assertEquals(program, timing.getProgram());
-			assertEquals(fileName(implementation), timing.getSourceFile());
+			assertEquals(implementation, timing.getSourceFile());
 			assertEquals("compute", timing.getStage());
 			assertEquals("direct:120x68x1", timing.getDispatch());
 		}
@@ -41,8 +50,8 @@ class ComputeProgramTimingTest {
 			mappedSource("composite13_a", "/pass/composite/DirectLighting.glsl")
 		).direct(new Vector3i(240, 135, 1));
 
-		assertEquals("GenerateSkyViewLUT.comp.glsl", skyView.getSourceFile());
-		assertEquals("DirectLighting.glsl", directLighting.getSourceFile());
+		assertEquals("/techniques/atmospherics/air/lut/GenerateSkyViewLUT.comp.glsl", skyView.getSourceFile());
+		assertEquals("/pass/composite/DirectLighting.glsl", directLighting.getSourceFile());
 		assertEquals("begin3_a", skyView.getProgram());
 		assertEquals("composite13_a", directLighting.getProgram());
 	}
@@ -76,7 +85,7 @@ class ComputeProgramTimingTest {
 
 		GpuTimingProgram timing = new ComputeProgramTiming("compute", mapped).direct(new Vector3i(1));
 
-		assertEquals("implementation.comp.glsl", timing.getSourceFile());
+		assertEquals("/implementation.comp.glsl", timing.getSourceFile());
 	}
 
 	private static String mappedSource(String program, String implementation) {

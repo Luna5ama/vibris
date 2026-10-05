@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FakeVibrisServerTest {
-    private static final ProtocolVersion V2 = ProtocolVersion.newBuilder().setMajor(2).setMinor(0).build();
+    private static final ProtocolVersion V2 = ProtocolVersion.newBuilder().setMajor(3).setMinor(1).build();
 
     @TempDir
     Path temp;
@@ -42,13 +42,13 @@ class FakeVibrisServerTest {
             GetServerInfoResponse parsed = GetServerInfoResponse.parseFrom(response.toByteArray());
 
             assertTrue(running.server().port() > 0);
-            assertEquals(2, parsed.getProtocolVersion().getMajor());
+            assertEquals(3, parsed.getProtocolVersion().getMajor());
             assertTrue(parsed.getServer().getStatus().getReadiness().getCoreOnline());
             assertEquals(
                 temp.resolve("unary/pending-shaders").toAbsolutePath().normalize().toString(),
                 parsed.getServer().getPendingSourceRoot()
             );
-            assertEquals(4, parsed.getServer().getCapabilitiesCount());
+            assertEquals(5, parsed.getServer().getCapabilitiesCount());
             assertEquals(1, client.listPresets(ListPresetsRequest.getDefaultInstance()).getPresetsCount());
             assertTrue(client.getStatus(GetStatusRequest.getDefaultInstance()).getStatus().getReadiness().getCoreOnline());
         }
@@ -82,8 +82,8 @@ class FakeVibrisServerTest {
 
             ServerMessage serverHello = responses.next();
             assertTrue(serverHello.hasServerHello());
-            assertEquals(2, serverHello.getProtocolVersion().getMajor());
-            assertEquals(0, serverHello.getProtocolVersion().getMinor());
+            assertEquals(3, serverHello.getProtocolVersion().getMajor());
+            assertEquals(1, serverHello.getProtocolVersion().getMinor());
 
             requests.onNext(ClientMessage.newBuilder()
                 .setProtocolVersion(V2)

@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $McpExe = (Join-Path $PSScriptRoot "..\..\mcp\out\build\Release\vibris-mcp.exe"),
-    [Alias("PatchedJar", "IrisJar")] [string] $PatchedIrisJar =
-        (Join-Path $PSScriptRoot "..\..\..\Iris\build\libs\iris-fabric-*-local.jar"),
+    [string] $VibrisModJar =
+        (Join-Path $PSScriptRoot "..\..\mod-fabric\build\libs\vibris-fabric-*.jar"),
     [string] $DeliveryDirectory = (Join-Path $PSScriptRoot "..\..\build\delivery"),
     [string] $JavaDescriptor = (Join-Path $PSScriptRoot "..\..\protocol-java\build\libs\vibris-protocol-java.jar"),
     [string] $CppDescriptorDump =
@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $script:VibrisRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $script:IrisRoot = [System.IO.Path]::GetFullPath((Join-Path $script:VibrisRoot "..\Iris"))
 
-function Resolve-IrisArtifact
+function Resolve-AuditArtifact
 {
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Label)
 
@@ -31,7 +31,7 @@ function Resolve-IrisArtifact
     return $items[0].FullName
 }
 
-function Resolve-IrisDirectory
+function Resolve-AuditDirectory
 {
     param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $Label)
 
@@ -40,11 +40,11 @@ function Resolve-IrisDirectory
     return $item.FullName
 }
 
-function Resolve-IrisPatchedJar
+function Resolve-VibrisModJar
 {
     param([Parameter(Mandatory)] [string] $Path)
 
-    $jar = Resolve-IrisArtifact -Path $Path -Label "PatchedJar"
+    $jar = Resolve-AuditArtifact -Path $Path -Label "VibrisModJar"
     $archive = [System.IO.Compression.ZipFile]::OpenRead($jar)
     try
     {
@@ -63,13 +63,17 @@ function Resolve-IrisPatchedJar
         {
             if (@($names | Where-Object { $_ -match $entry.Value }).Count -ne 1)
             {
-                throw "PatchedJar must embed exactly one $($entry.Key) JAR: $jar"
+                throw "VibrisModJar must embed exactly one $($entry.Key) JAR: $jar"
             }
         }
         if ($names -notcontains "fabric.mod.json")
         {
-            throw "PatchedJar does not contain Iris fabric.mod.json: $jar"
+            throw "Vibris mod JAR does not contain fabric.mod.json: $jar"
         }
+        $metadataReader = [IO.StreamReader]::new($archive.GetEntry("fabric.mod.json").Open())
+        try { $metadata = $metadataReader.ReadToEnd() | ConvertFrom-Json }
+        finally { $metadataReader.Dispose() }
+        if ($metadata.id -cne "vibris") { throw "Delivery JAR must contain the independent vibris mod." }
     }
     finally
     {
@@ -345,10 +349,11 @@ try
         $path = Join-Path $script:VibrisRoot $_
         if (Test-Path -LiteralPath $path -PathType Leaf) { Get-Item -LiteralPath $path }
     })
-    $trackedJava = @($trackedMainFiles | Where-Object { $_.Extension -ieq ".java" })
+    $trackedJava = @($trackedMainFiles | Where-Object { $_.Extension -ieq ".java" -and
+        $_.FullName -notmatch '[\\/](?:mod-common|mod-fabric|test-runtime)[\\/]' })
     if ($trackedJava.Count -ne 0)
     {
-        throw "Tracked handwritten JVM production source must be Kotlin: $($trackedJava[0].FullName)"
+        throw "Handwritten API/Core production source must be Kotlin: $($trackedJava[0].FullName)"
     }
 
     $mcpJvmSources = @(Get-ChildItem -LiteralPath (Join-Path $script:VibrisRoot "mcp\src\main") `
@@ -364,7 +369,7 @@ try
         -Pattern '(?m)^\s*import\s+(?:net\.irisshaders|org\.eclipse\.jgit)\.' `
         -Label "Kotlin core Git/Iris import"
 
-    $protoSchema = Resolve-IrisArtifact -Path $ProtoPath -Label "Protocol schema"
+    $protoSchema = Resolve-AuditArtifact -Path $ProtoPath -Label "Protocol schema"
     $protoSchema = Assert-AuditPathHasNoReparse -Path $protoSchema `
         -Label "Protocol schema" -RequireExisting
     $protoSchemaText = Get-Content -Raw -LiteralPath $protoSchema
@@ -399,12 +404,14 @@ try
         "vibris_run_actions",
         "vibris_run_matrix",
         "vibris_job",
-        "vibris_artifacts"
+        "vibris_artifacts",
+        "vibris_compare",
+        "vibris_preview_presets"
     )
     if ([string]::Join("`n", $tools) -cne [string]::Join("`n", $expectedTools) -or
         @($tools | Select-Object -Unique).Count -ne $expectedTools.Count)
     {
-        throw "Native MCP tool registry does not expose exactly the expected 10-tool surface."
+        throw "Native MCP tool registry does not expose exactly the expected 12-tool surface."
     }
     foreach ($legacy in @(
         "mcp\src\main\cpp\debug_tools.cpp",
@@ -421,24 +428,20 @@ try
         throw "Protocol still exposes the legacy DebugControl transport."
     }
 
-    $mixinRoots = @("common", "fabric", "neoforge") | ForEach-Object {
-        Join-Path $script:IrisRoot "$_\src\main\java"
-    }
-    $vibrisMixins = @($mixinRoots | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object {
-        Get-ChildItem -LiteralPath $_ -Recurse -File | Where-Object {
-            $_.FullName -match '[\\/]mixin[\\/]' -and $_.Name -match '(?i)vibris'
+    $javaRoot = Join-Path $script:VibrisRoot "mod-common\src\main\java"
+    $vibrisMixins = @(Get-ChildItem -LiteralPath (Join-Path $javaRoot "dev\vibris\mod\mixin") -Recurse -File |
+        Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match '@Mixin\b' })
+    $expectedVibrisMixins = @(Get-ChildItem -LiteralPath (Join-Path $script:VibrisRoot "mod-common\src\main\resources") `
+        -Filter "mixins.vibris*.json" -File | ForEach-Object {
+        $configuration = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+        foreach ($section in @("mixins", "client", "server")) {
+            if ($configuration.PSObject.Properties.Name -notcontains $section) { continue }
+            foreach ($name in $configuration.$section) {
+                $relative = ($configuration.package + "." + $name).Replace(".", "\") + ".java"
+                [IO.Path]::GetFullPath((Join-Path $javaRoot $relative))
+            }
         }
-    })
-    $expectedVibrisMixins = @(
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinKeyboardHandler_VibrisInputBlock.java",
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinLevelLoadingScreen_VibrisTrackerRelease.java",
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinLevelLoadTracker_VibrisServerViewRelease.java",
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinMinecraft_VibrisFrameThrottle.java",
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinMinecraft_VibrisLevelLoadRelease.java",
-        "common\src\main\java\net\irisshaders\iris\mixin\MixinMouseHandler_VibrisInputBlock.java"
-    ) | ForEach-Object {
-        [System.IO.Path]::GetFullPath((Join-Path $script:IrisRoot $_))
-    } | Sort-Object
+    } | Sort-Object)
     $actualVibrisMixins = @($vibrisMixins | ForEach-Object {
         [System.IO.Path]::GetFullPath($_.FullName)
     } | Sort-Object)
@@ -448,25 +451,20 @@ try
             [string]::Join("`n", $expectedVibrisMixins),
             [System.StringComparison]::OrdinalIgnoreCase))
     {
-        throw "Iris Vibris mixins differ from the exact audited set: " +
+        throw "Vibris mod mixin sources differ from their registered set: " +
             [string]::Join(", ", $expectedVibrisMixins)
     }
 
-    $exe = Resolve-IrisArtifact -Path $McpExe -Label "Release native MCP"
+    $exe = Resolve-AuditArtifact -Path $McpExe -Label "Release native MCP"
     $exe = Assert-AuditPathHasNoReparse -Path $exe -Label "Release native MCP" -RequireExisting
     if ((Split-Path -Leaf $exe) -cne "vibris-mcp.exe")
     {
         throw "Native package executable must be named vibris-mcp.exe: $exe"
     }
-    $jar = Resolve-IrisPatchedJar -Path $PatchedIrisJar
-    $jar = Assert-AuditPathHasNoReparse -Path $jar -Label "Patched Iris JAR" -RequireExisting
-    $extraModJars = @(Get-ChildItem -LiteralPath (Split-Path -Parent $jar) -File -Filter "vibris*.jar")
-    if ($extraModJars.Count -ne 0)
-    {
-        throw "Packaging must not emit a separate Vibris mod JAR: $($extraModJars[0].FullName)"
-    }
+    $jar = Resolve-VibrisModJar -Path $VibrisModJar
+    $jar = Assert-AuditPathHasNoReparse -Path $jar -Label "Vibris mod JAR" -RequireExisting
 
-    $delivery = Resolve-IrisDirectory -Path $DeliveryDirectory -Label "DeliveryDirectory"
+    $delivery = Resolve-AuditDirectory -Path $DeliveryDirectory -Label "DeliveryDirectory"
     $delivery = Assert-AuditPathHasNoReparse -Path $delivery -Label "DeliveryDirectory" -RequireExisting
     $deliveryEntries = @(Get-ChildItem -LiteralPath $delivery -Force)
     if ($deliveryEntries.Count -ne 2 -or @($deliveryEntries | Where-Object {
@@ -484,7 +482,7 @@ try
     $deliveredJar = @($deliveryEntries | Where-Object { $_.Name -ceq (Split-Path -Leaf $jar) })
     if ($deliveredExe.Count -ne 1 -or $deliveredJar.Count -ne 1)
     {
-        throw "DeliveryDirectory does not contain the exact requested MCP executable and Iris JAR."
+        throw "DeliveryDirectory does not contain the exact requested MCP executable and Vibris mod JAR."
     }
 
     $releaseMcpHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
@@ -493,16 +491,16 @@ try
     {
         throw "Delivered MCP executable hash mismatch: release=$releaseMcpHash delivery=$deliveryMcpHash"
     }
-    $requestedIrisHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar).Hash
-    $deliveryIrisHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $deliveredJar[0].FullName).Hash
-    if ($requestedIrisHash -cne $deliveryIrisHash)
+    $requestedModHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jar).Hash
+    $deliveryModHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $deliveredJar[0].FullName).Hash
+    if ($requestedModHash -cne $deliveryModHash)
     {
-        throw "Delivered Iris JAR hash mismatch: requested=$requestedIrisHash delivery=$deliveryIrisHash"
+        throw "Delivered Vibris mod JAR hash mismatch: requested=$requestedModHash delivery=$deliveryModHash"
     }
 
-    $javaJar = Resolve-IrisArtifact -Path $JavaDescriptor -Label "Java protocol JAR"
+    $javaJar = Resolve-AuditArtifact -Path $JavaDescriptor -Label "Java protocol JAR"
     $javaJar = Assert-AuditPathHasNoReparse -Path $javaJar -Label "Java protocol JAR" -RequireExisting
-    $descriptorDump = Resolve-IrisArtifact -Path $CppDescriptorDump -Label "C++ descriptor dump"
+    $descriptorDump = Resolve-AuditArtifact -Path $CppDescriptorDump -Label "C++ descriptor dump"
     $descriptorDump = Assert-AuditPathHasNoReparse -Path $descriptorDump `
         -Label "C++ descriptor dump" -RequireExisting
     $descriptorOutput = @(& (Join-Path $PSScriptRoot "protocol-descriptor-smoke.ps1") `
@@ -518,7 +516,7 @@ try
         })
         if ($embeddedEntries.Count -ne 1)
         {
-            throw "Patched Iris JAR must embed exactly one vibris-protocol-java.jar: $jar"
+            throw "Vibris mod JAR must embed exactly one vibris-protocol-java.jar: $jar"
         }
         $stream = $embeddedEntries[0].Open()
         try
@@ -583,7 +581,7 @@ try
         })
         if ($missingEntries.Count -ne 0 -or $extraEntries.Count -ne 0)
         {
-            throw ("Patched Iris JAR embeds stale protocol content: missing=[{0}] extra=[{1}]" -f
+            throw ("Vibris mod JAR embeds stale protocol content: missing=[{0}] extra=[{1}]" -f
                 [string]::Join(',', @($missingEntries | Sort-Object)),
                 [string]::Join(',', @($extraEntries | Sort-Object)))
         }
@@ -595,7 +593,7 @@ try
                 $builtRecord.length -ne $embeddedRecord.length -or
                 $builtRecord.sha256 -cne $embeddedRecord.sha256)
             {
-                throw "Patched Iris JAR embeds stale protocol content at entry: $name"
+                throw "Vibris mod JAR embeds stale protocol content at entry: $name"
             }
         }
 
@@ -603,7 +601,7 @@ try
         $embeddedContentHash = Get-JarInventoryHash -Inventory $embeddedInventory
         if ($protocolContentHash -cne $embeddedContentHash)
         {
-            throw ("Patched Iris JAR protocol inventory hash mismatch: " +
+            throw ("Vibris mod JAR protocol inventory hash mismatch: " +
                 "built=$protocolContentHash embedded=$embeddedContentHash")
         }
     }
@@ -615,11 +613,11 @@ try
     }
 
     Write-Output ($descriptorOutput | Where-Object { $_ -like "PASS *" })
-    Write-Output ("PASS source_audit=true transport=grpc source_payload=reference tools=10 " +
-        "jvm_language=kotlin native_mcp=cpp core_iris_jgit_imports=0 " +
+    Write-Output ("PASS source_audit=true transport=grpc source_payload=reference tools=$($expectedTools.Count) " +
+        "core_language=kotlin mod_language=java native_mcp=cpp core_iris_jgit_imports=0 " +
         "vibris_mixins=$($actualVibrisMixins.Count) " +
-        "renderdoc_dependencies=0 package_exe=1 package_iris_jar=1 extra_mod_jars=0 " +
-        "delivery_files=2 release_mcp_sha256=$releaseMcpHash requested_iris_sha256=$requestedIrisHash " +
+        "renderdoc_dependencies=0 package_exe=1 package_vibris_mod_jar=1 " +
+        "delivery_files=2 release_mcp_sha256=$releaseMcpHash requested_mod_sha256=$requestedModHash " +
         "built_protocol_sha256=$javaProtocolHash embedded_protocol_sha256=$embeddedProtocolHash " +
         "protocol_content_sha256=$protocolContentHash " +
         "loom_generated_metadata=$($loomGeneratedMetadata.ToString().ToLowerInvariant()) " +

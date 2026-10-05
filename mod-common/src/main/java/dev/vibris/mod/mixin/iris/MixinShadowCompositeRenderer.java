@@ -31,7 +31,8 @@ public abstract class MixinShadowCompositeRenderer {
 	private void vibris$registerPasses(CallbackInfo ci) {
 		IrisVibrisPassCapture capture = ((VibrisPipeline) pipeline).vibris$getPassCapture();
 		for (Object pass : passes) vibris$handles.add(capture.register(
-			ResourceCatalog.PassStage.SHADOW_COMPOSITE, ((VibrisPassInfo) pass).vibris$name()));
+			ResourceCatalog.PassStage.SHADOW_COMPOSITE, ((VibrisPassInfo) pass).vibris$name(),
+			((VibrisPassInfo) pass).vibris$programs()));
 	}
 
 	@Inject(method = "renderAll", at = @At("HEAD"), require = 1, expect = 1)

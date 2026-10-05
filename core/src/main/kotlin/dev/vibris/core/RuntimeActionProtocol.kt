@@ -5,6 +5,7 @@ import dev.vibris.protocol.v2.Action
 import dev.vibris.protocol.v2.ActionKind
 import dev.vibris.protocol.v2.GpuMetricsReceipt
 import dev.vibris.protocol.v2.GpuTimingMetric
+import dev.vibris.protocol.v2.MissingGpuMetric
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -17,6 +18,8 @@ internal object RuntimeActionProtocol {
     fun isRuntime(action: Action): Boolean = when (action.actionCase) {
         Action.ActionCase.GET_CAPTURE_STATUS,
         Action.ActionCase.GET_GPU_METRICS,
+        Action.ActionCase.TEXTURE_STATS,
+        Action.ActionCase.ACCUMULATE_TEXTURE,
         -> true
         else -> false
     }
@@ -86,7 +89,7 @@ internal object RuntimeActionProtocol {
             require(program.requireText("kind") == "program") { "GPU program timing kind must be program" }
             val programId = program.requireText("program")
             program.requireText("stage")
-            program.requireText("source")
+            val mainSource = program.requireText("source")
             program.optionalText("dispatch")
             val passId = program.optionalText("framework_pass").orEmpty()
             program.requireObject("defines").forEach { (name, define) ->
@@ -99,6 +102,7 @@ internal object RuntimeActionProtocol {
                     programId,
                     passId,
                     program.requireObject("statistics").statistics(metricId),
+                    mainSource,
                 ),
             )
         }
@@ -109,14 +113,16 @@ internal object RuntimeActionProtocol {
         }
         val requested = command.metricIdsList.toSet()
         val missing = requested - metrics.map(GpuTimingMetric::getMetricId).toSet()
-        require(missing.isEmpty()) { "GPU timing response omitted requested metrics: ${missing.sorted().joinToString()}" }
         val selected = metrics.filter { requested.isEmpty() || it.metricId in requested }
-        require(selected.isNotEmpty()) { "GPU timing metric filter selected no metrics" }
 
         return GpuMetricsReceipt.newBuilder()
             .setTimingUnit(timingUnit)
             .setSampledFrames(sampledFrames.toInt())
             .addAllMetrics(selected)
+            .addAllMissing(missing.sorted().map { id ->
+                MissingGpuMetric.newBuilder().setMetricId(id)
+                    .addAllSuggestions(NameSuggestions.suggest(id, metrics.map(GpuTimingMetric::getMetricId))).build()
+            })
             .build()
     }
 
@@ -125,7 +131,6 @@ internal object RuntimeActionProtocol {
         Action.ActionCase.WAIT_FRAMES -> ActionKind.ACTION_KIND_WAIT_FRAMES
         Action.ActionCase.TAKE_SCREENSHOT -> ActionKind.ACTION_KIND_TAKE_SCREENSHOT
         Action.ActionCase.ACTIVATE_SOURCE -> ActionKind.ACTION_KIND_ACTIVATE_SOURCE
-        Action.ActionCase.COMPARE_CAPTURES -> ActionKind.ACTION_KIND_COMPARE_CAPTURES
         Action.ActionCase.GET_CAPTURE_STATUS -> ActionKind.ACTION_KIND_GET_CAPTURE_STATUS
         Action.ActionCase.INSPECT_SHADER -> ActionKind.ACTION_KIND_INSPECT_SHADER
         Action.ActionCase.GET_GPU_METRICS -> ActionKind.ACTION_KIND_GET_GPU_METRICS
@@ -137,6 +142,8 @@ internal object RuntimeActionProtocol {
         Action.ActionCase.DUMP_TEXTURE_AFTER_PASS -> ActionKind.ACTION_KIND_DUMP_TEXTURE_AFTER_PASS
         Action.ActionCase.DUMP_BUFFER_AFTER_PASS -> ActionKind.ACTION_KIND_DUMP_BUFFER_AFTER_PASS
         Action.ActionCase.NSIGHT_GPU_TRACE -> ActionKind.ACTION_KIND_NSIGHT_GPU_TRACE
+        Action.ActionCase.TEXTURE_STATS -> ActionKind.ACTION_KIND_TEXTURE_STATS
+        Action.ActionCase.ACCUMULATE_TEXTURE -> ActionKind.ACTION_KIND_ACCUMULATE_TEXTURE
         else -> throw IllegalArgumentException("Action kind is unsupported")
     }
 
@@ -153,10 +160,12 @@ internal object RuntimeActionProtocol {
         programId: String,
         passId: String,
         statistics: Statistics,
+        mainSource: String = "",
     ): GpuTimingMetric = GpuTimingMetric.newBuilder()
         .setMetricId(metricId)
         .setProgramId(programId)
         .setPassId(passId)
+        .setMainSource(mainSource)
         .setAverageNs(statistics.average)
         .setP50Ns(statistics.p50)
         .setP95Ns(statistics.p95)

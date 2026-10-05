@@ -10,6 +10,8 @@
 #include <bcrypt.h>
 
 #include <array>
+#include <fstream>
+#include <iterator>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -197,34 +199,63 @@ PreparedSource SourcePreparer::prepare_workspace() const {
     throw StateError("INTERNAL_ERROR", "Workspace source preparation exhausted its retry boundary.");
 }
 
-PreparedSource SourcePreparer::prepare_commit(std::string_view revision) const {
+PreparedSource SourcePreparer::prepare_commit(std::string_view revision, const fs::path& patch) const {
     GitRepository repository(workspace_root_);
     const auto resolved = repository.resolve_commit(revision);
     auto target = create_destination(destination_root_, layout_);
+    const auto frozen_patch = layout_ == SourceDestinationLayout::archive_file
+        ? destination_root_ / (target.uuid + ".patch") : target.owned / "source.patch";
+    const auto index = destination_root_ / (target.uuid + ".index");
     try {
+        std::string tree = resolved, patch_sha;
+        if (!patch.empty()) {
+            const auto path = patch.is_absolute() ? patch : workspace_root_ / patch;
+            std::ifstream input(path, std::ios::binary);
+            if (!input) throw StateError("PATCH_NOT_FOUND", "Patch file was not found: " + path.string());
+            if (fs::file_size(path) > 64ULL * 1024ULL * 1024ULL)
+                throw StateError("PATCH_APPLY_FAILED", "Patch exceeds 64 MiB.");
+            const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+            Sha256 hash;
+            hash.update(bytes);
+            patch_sha = hash.finish();
+            std::ofstream output(frozen_patch, std::ios::binary);
+            output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            output.close();
+            if (!output) throw StateError("PATCH_APPLY_FAILED", "Unable to freeze patch file.");
+            tree = repository.apply_shader_patch(resolved, frozen_patch, index);
+        }
         const auto maximum_tar = maximum_source_archive_bytes(limits_);
         auto result = write_commit_source_archive(
-            repository.open_shader_archive(resolved, maximum_tar), target.archive, limits_);
+            repository.open_shader_archive(tree, maximum_tar), target.archive, limits_);
         const auto workspace = git_snapshot(workspace_root_);
         control::v2::PreparedSourceRef reference;
         reference.set_source_uuid(target.uuid);
         set_archive_fields(reference, result);
-        reference.set_requested_revision(std::string(revision));
+        const auto requested = std::string(revision) + (patch_sha.empty() ? "" : "+patch:" + patch_sha.substr(0, 8));
+        reference.set_requested_revision(requested);
+        reference.set_patch_sha256(patch_sha);
         reference.set_resolved_revision(resolved);
         reference.set_vcs_checkout_state(workspace.checkout_state);
         reference.set_branch(workspace.branch);
         reference.set_start_head(workspace.head);
-        reference.set_shader_tree_id(repository.shader_tree_id(resolved));
+        reference.set_shader_tree_id(repository.shader_tree_id(tree));
         auto* origin = reference.mutable_origin()->mutable_commit();
         origin->set_repository_id(workspace_root_.filename().string());
         origin->set_revision(resolved);
         origin->set_worktree_root(workspace_root_.string());
+        origin->set_patch_sha256(patch_sha);
+        std::error_code ignored;
+        fs::remove(index, ignored);
+        fs::remove(fs::path(index.string() + ".lock"), ignored);
         return PreparedSource(std::move(reference), std::move(target.owned),
-            std::move(target.archive), 1, std::string(revision), resolved,
+            std::move(target.archive), 1, requested, resolved,
             {result.input_archive_bytes, result.largest_input_read_bytes,
                 result.metadata.file_count, result.metadata.total_bytes});
     } catch (...) {
         std::error_code ignored;
+        fs::remove(index, ignored);
+        fs::remove(fs::path(index.string() + ".lock"), ignored);
+        fs::remove(frozen_patch, ignored);
         fs::remove_all(target.owned, ignored);
         throw;
     }

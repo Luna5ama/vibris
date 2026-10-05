@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "..\..\tools\git-process.ps1")
 
 $VibrisRoot = [System.IO.Path]::GetFullPath($VibrisRoot).TrimEnd('\', '/')
 $IrisRoot = [System.IO.Path]::GetFullPath($IrisRoot).TrimEnd('\', '/')
@@ -157,7 +158,7 @@ function Invoke-Package
         -Mutation $ReceiptMutation
     try
     {
-        return @(& $packageScript -McpExe $Mcp -PatchedIrisJar $Jar `
+        return @(& $packageScript -McpExe $Mcp -VibrisModJar $Jar `
             -BuildReceipt $session.receipt -OutputDirectory $Target `
             -TestCleanupFailure $CleanupFailure `
             -TestBeforeRecordReady $BeforeRecordReady `
@@ -378,7 +379,7 @@ function New-ProbeBuildSession
                     started_utc = $protocolStarted.ToString("o")
                     completed_utc = $protocolCompleted.ToString("o")
                 }
-                iris = [ordered] @{
+                mod = [ordered] @{
                     started_utc = $irisStarted.ToString("o")
                     completed_utc = $irisCompleted.ToString("o")
                 }
@@ -386,10 +387,11 @@ function New-ProbeBuildSession
             scripts = [ordered] @{
                 build = Get-BuildArtifactRecord -Path $script:buildScript
                 package = Get-BuildArtifactRecord -Path $script:packageScript
+                git_process = Get-BuildArtifactRecord -Path (Join-Path $script:VibrisRoot "tools\git-process.ps1")
             }
             artifacts = [ordered] @{
                 mcp = Get-BuildArtifactRecord -Path $Mcp
-                iris = Get-BuildArtifactRecord -Path $Jar
+                mod = Get-BuildArtifactRecord -Path $Jar
                 java_descriptor = Get-BuildArtifactRecord -Path $script:protocolJar
                 cpp_descriptor = Get-BuildArtifactRecord -Path (Join-Path $script:VibrisRoot `
                     "mcp\out\build\Release\vibris-descriptor-dump.exe")
@@ -453,15 +455,15 @@ try
     $protocolCompletionMatches = [regex]::Matches(
         $buildText, '(?m)^\s*\$protocolBuildCompleted = \[datetime\]::UtcNow\s*$')
     $irisCompletionIndex = $buildText.IndexOf(
-        '$irisBuildCompleted = [datetime]::UtcNow', [System.StringComparison]::Ordinal)
+        '$modBuildCompleted = [datetime]::UtcNow', [System.StringComparison]::Ordinal)
     if ($protocolCompletionMatches.Count -ne 1 -or $irisCompletionIndex -lt 0 -or
         $protocolCompletionMatches[0].Index -le $irisCompletionIndex)
     {
-        throw "Protocol receipt phase must include the Iris composite protocol rebuild."
+        throw "Protocol receipt phase must include the independent mod's composite protocol rebuild."
     }
     $log.Add("PASS scenario=composite-protocol-phase receipt_covers_final_artifact=true")
 
-    Assert-ExpectedFailure -Scenario "missing-mandatory-iris" -Pattern "PatchedIrisJar" -Action {
+    Assert-ExpectedFailure -Scenario "missing-mandatory-mod" -Pattern "VibrisModJar" -Action {
         & $packageScript -McpExe $releaseMcp -OutputDirectory (Join-Path $scope "missing-iris") | Out-Null
     }
 
@@ -485,7 +487,7 @@ try
         $buildScript, [ref] $null, [ref] $null)
     foreach ($name in @(
         "Invoke-GitText", "Get-RepositorySourceState", "Get-BuildArtifactRecord",
-        "Get-IrisBuildFingerprint", "Resolve-RebuiltIrisJar"))
+        "Get-ModBuildFingerprint", "Resolve-RebuiltModJar"))
     {
         $functionAst = @($ast.FindAll({
             param($node)
@@ -498,24 +500,24 @@ try
     $probeVibrisSource = Get-RepositorySourceState -Root $VibrisRoot
     $probeIrisSource = Get-RepositorySourceState -Root $IrisRoot
     [void] (New-Item -ItemType Directory -Path $freshnessRoot)
-    $freshJar = Join-Path $freshnessRoot "iris-fabric-freshness-local.jar"
+    $freshJar = Join-Path $freshnessRoot "vibris-fabric-freshness-local.jar"
     [System.IO.File]::WriteAllText($freshJar, "unchanged")
-    $beforeFingerprint = Get-IrisBuildFingerprint -Directory $freshnessRoot
+    $beforeFingerprint = Get-ModBuildFingerprint -Directory $freshnessRoot
     Assert-ExpectedFailure -Scenario "unchanged-jar-not-fresh" -Pattern "resolved 0" -Action {
-        Resolve-RebuiltIrisJar -Directory $freshnessRoot -Before $beforeFingerprint | Out-Null
+        Resolve-RebuiltModJar -Directory $freshnessRoot -Before $beforeFingerprint | Out-Null
     }
-    $ambiguousBefore = Get-IrisBuildFingerprint -Directory $freshnessRoot
-    [System.IO.File]::WriteAllText((Join-Path $freshnessRoot "iris-fabric-a-local.jar"), "a")
-    [System.IO.File]::WriteAllText((Join-Path $freshnessRoot "iris-fabric-b-local.jar"), "b")
+    $ambiguousBefore = Get-ModBuildFingerprint -Directory $freshnessRoot
+    [System.IO.File]::WriteAllText((Join-Path $freshnessRoot "vibris-fabric-a-local.jar"), "a")
+    [System.IO.File]::WriteAllText((Join-Path $freshnessRoot "vibris-fabric-b-local.jar"), "b")
     Assert-ExpectedFailure -Scenario "ambiguous-fresh-jars" -Pattern "resolved 2" -Action {
-        Resolve-RebuiltIrisJar -Directory $freshnessRoot -Before $ambiguousBefore | Out-Null
+        Resolve-RebuiltModJar -Directory $freshnessRoot -Before $ambiguousBefore | Out-Null
     }
 
-    $sourceIrisJar = @(Get-ChildItem -LiteralPath (Join-Path $IrisRoot "build\libs") `
-        -File -Filter "iris-fabric-*-local.jar")
-    if ($sourceIrisJar.Count -ne 1) { throw "Probe requires exactly one existing Iris local JAR." }
-    $patchedJar = Join-Path $inputRoot $sourceIrisJar[0].Name
-    Copy-Item -LiteralPath $sourceIrisJar[0].FullName -Destination $patchedJar
+    $sourceModJar = @(Get-ChildItem -LiteralPath (Join-Path $VibrisRoot "mod-fabric\build\libs") `
+        -File -Filter "vibris-fabric-*.jar" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
+    if ($sourceModJar.Count -ne 1) { throw "Probe requires an existing independent Vibris mod JAR." }
+    $vibrisModJar = Join-Path $inputRoot $sourceModJar[0].Name
+    Copy-Item -LiteralPath $sourceModJar[0].FullName -Destination $vibrisModJar
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $loomProtocolJar = Join-Path $inputRoot "vibris-protocol-java-loom.jar"
     Copy-Item -LiteralPath $protocolJar -Destination $loomProtocolJar
@@ -539,16 +541,16 @@ try
     {
         $loomProtocolArchive.Dispose()
     }
-    Set-IrisEmbeddedProtocol -IrisJar $patchedJar -ProtocolJar $loomProtocolJar
+    Set-IrisEmbeddedProtocol -IrisJar $vibrisModJar -ProtocolJar $loomProtocolJar
     $mcpHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseMcp).Hash
-    $jarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $patchedJar).Hash
-    $jarName = Split-Path -Leaf $patchedJar
+    $jarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $vibrisModJar).Hash
+    $jarName = Split-Path -Leaf $vibrisModJar
 
     Assert-ExpectedFailure -Scenario "build-root-output" -Pattern "must be below" -Action {
-        Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $buildRoot | Out-Null
+        Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $buildRoot | Out-Null
     }
 
-    $first = Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target ($output + "\")
+    $first = Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target ($output + "\")
     $firstText = $first -join "`n"
     $targetKey = Get-TargetKey -Path $output
     $transactionRoot = Join-Path $buildRoot ".delivery-transactions\$targetKey"
@@ -577,7 +579,7 @@ try
             [void] (New-Item -ItemType Directory -Path $recoveryNext)
             [void] (New-Item -ItemType Directory -Path $recoveryOutput)
             Copy-Item -LiteralPath $releaseMcp -Destination $recoveryNext
-            Copy-Item -LiteralPath $patchedJar -Destination $recoveryNext
+            Copy-Item -LiteralPath $vibrisModJar -Destination $recoveryNext
 
             foreach ($name in @("vibris-mcp.exe", $jarName))
             {
@@ -607,7 +609,7 @@ try
                 present = $true
                 mcp = Get-Record -Path (Join-Path $recoveryNext "vibris-mcp.exe") `
                     -Name "vibris-mcp.exe"
-                iris = Get-Record -Path (Join-Path $recoveryNext $jarName) -Name $jarName
+                mod = Get-Record -Path (Join-Path $recoveryNext $jarName) -Name $jarName
             }
             $recoveryManifest = [ordered] @{
                 schema_version = 2
@@ -628,7 +630,7 @@ try
             $recoveryResult = @()
             try
             {
-                $recoveryResult = @(Invoke-Package -Mcp $releaseMcp -Jar $patchedJar `
+                $recoveryResult = @(Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar `
                     -Target $recoveryOutput)
             }
             catch
@@ -665,7 +667,7 @@ try
             {
                 throw "Divergent first-publication recovery retained owned state: $recoveryState"
             }
-            [void] (Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $recoveryOutput)
+            [void] (Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $recoveryOutput)
             Assert-ExactDelivery -Directory $recoveryOutput -McpHash $mcpHash `
                 -JarName $jarName -JarHash $jarHash
             $log.Add("PASS scenario=first-publication-$($recoveryState.ToLowerInvariant())-" +
@@ -689,7 +691,7 @@ try
     {
         Assert-ExpectedFailure -Scenario "hard-link-failure-after-$hardLinkFailureAfter" `
             -Pattern "Injected hard-link publication failure" -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output `
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output `
                     -HardLinkFailureAfter $hardLinkFailureAfter | Out-Null
             }
         Assert-ExactDelivery -Directory $output -McpHash $mcpHash `
@@ -704,7 +706,7 @@ try
 
     Assert-ExpectedFailure -Scenario "published-identity-mismatch" `
         -Pattern "identity differs from its audited snapshot" -Action {
-            Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output `
+            Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output `
                 -PublishIdentityMismatch | Out-Null
         }
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash `
@@ -718,7 +720,7 @@ try
 
     Assert-ExpectedFailure -Scenario "published-link-count-mismatch" `
         -Pattern "invalid link count" -Action {
-            Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output `
+            Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output `
                 -PublishExtraHardLink | Out-Null
         }
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash `
@@ -731,20 +733,20 @@ try
         "last_good_preserved=true bounded_cleanup=true")
 
     Assert-ExpectedFailure -Scenario "missing-build-receipt" -Pattern "BuildReceipt" -Action {
-        & $packageScript -McpExe $releaseMcp -PatchedIrisJar $patchedJar `
+        & $packageScript -McpExe $releaseMcp -VibrisModJar $vibrisModJar `
             -OutputDirectory $output | Out-Null
     }
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash -JarName $jarName -JarHash $jarHash
     $log.Add("PASS scenario=missing-build-receipt last_good_preserved=true")
 
-    $inactiveSession = New-ProbeBuildSession -Mcp $releaseMcp -Jar $patchedJar -Mutation "None"
+    $inactiveSession = New-ProbeBuildSession -Mcp $releaseMcp -Jar $vibrisModJar -Mutation "None"
     $inactiveSession.lock.Dispose()
     $inactiveSession.lock = $null
     try
     {
         Assert-ExpectedFailure -Scenario "inactive-build-receipt" `
             -Pattern "session is not active" -Action {
-                & $packageScript -McpExe $releaseMcp -PatchedIrisJar $patchedJar `
+                & $packageScript -McpExe $releaseMcp -VibrisModJar $vibrisModJar `
                     -BuildReceipt $inactiveSession.receipt -OutputDirectory $output | Out-Null
             }
     }
@@ -780,7 +782,7 @@ try
     {
         Assert-ExpectedFailure -Scenario $receiptFailure.scenario `
             -Pattern $receiptFailure.pattern -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output `
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output `
                     -ReceiptMutation $receiptFailure.mutation | Out-Null
             }
         Assert-ExactDelivery -Directory $output -McpHash $mcpHash `
@@ -796,7 +798,7 @@ try
             mutate = {
                 param($Archive)
                 Write-ZipTextEntry -Archive $Archive `
-                    -Name "dev/vibris/protocol/v1/Action.class" `
+                    -Name "dev/vibris/protocol/v2/Action.class" `
                     -Content "changed-class" -Replace
             }
         },
@@ -807,7 +809,7 @@ try
             mutate = {
                 param($Archive)
                 $entry = @($Archive.Entries | Where-Object {
-                    $_.FullName -ceq "dev/vibris/protocol/v1/Action.class"
+                    $_.FullName -ceq "dev/vibris/protocol/v2/Action.class"
                 })
                 if ($entry.Count -ne 1) { throw "Missing-entry fixture source is invalid." }
                 $entry[0].Delete()
@@ -830,7 +832,7 @@ try
             mutate = {
                 param($Archive)
                 Write-ZipTextEntry -Archive $Archive `
-                    -Name "dev/vibris/protocol/v1/Action.class" -Content "duplicate"
+                    -Name "dev/vibris/protocol/v2/Action.class" -Content "duplicate"
             }
         },
         [pscustomobject] @{
@@ -912,12 +914,12 @@ try
             $variantArchive.Dispose()
         }
 
-        $variantIris = Join-Path $inputRoot "iris-fabric-$($semanticCase.scenario)-local.jar"
-        Copy-Item -LiteralPath $patchedJar -Destination $variantIris
-        Set-IrisEmbeddedProtocol -IrisJar $variantIris -ProtocolJar $variantProtocol
+        $variantMod = Join-Path $inputRoot "vibris-fabric-$($semanticCase.scenario)-local.jar"
+        Copy-Item -LiteralPath $vibrisModJar -Destination $variantMod
+        Set-IrisEmbeddedProtocol -IrisJar $variantMod -ProtocolJar $variantProtocol
         Assert-ExpectedFailure -Scenario $semanticCase.scenario `
             -Pattern $semanticCase.pattern -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $variantIris -Target $output | Out-Null
+                Invoke-Package -Mcp $releaseMcp -Jar $variantMod -Target $output | Out-Null
             }
         Assert-ExactDelivery `
             -Directory $output -McpHash $mcpHash -JarName $jarName -JarHash $jarHash
@@ -925,11 +927,11 @@ try
 
     $badProto = Join-Path $inputRoot "vibris_control_bad.proto"
     $badProtoText = (Get-Content -Raw -LiteralPath (Join-Path $VibrisRoot "proto\vibris_control.proto")) `
-        -replace 'string uuid\s*=', 'string changed_uuid ='
+        -replace 'string source_uuid\s*=', 'string changed_uuid ='
     [System.IO.File]::WriteAllText($badProto, $badProtoText)
-    Assert-ExpectedFailure -Scenario "explicit-proto-snapshot" -Pattern "missing 'string uuid'" -Action {
+    Assert-ExpectedFailure -Scenario "explicit-proto-snapshot" -Pattern "missing 'string source_uuid'" -Action {
         & $auditScript -McpExe (Join-Path $output "vibris-mcp.exe") `
-            -PatchedIrisJar (Join-Path $output $jarName) -DeliveryDirectory $output `
+            -VibrisModJar (Join-Path $output $jarName) -DeliveryDirectory $output `
             -ProtoPath $badProto | Out-Null
     }
 
@@ -938,7 +940,7 @@ try
     {
         Assert-ExpectedFailure -Scenario "audit-third-file" -Pattern "exactly two ordinary files" -Action {
             & $auditScript -McpExe (Join-Path $output "vibris-mcp.exe") `
-                -PatchedIrisJar (Join-Path $output $jarName) -DeliveryDirectory $output | Out-Null
+                -VibrisModJar (Join-Path $output $jarName) -DeliveryDirectory $output | Out-Null
         }
     }
     finally
@@ -957,7 +959,7 @@ try
         Assert-ExpectedFailure -Scenario "audit-reparse-leaves" `
             -Pattern "reparse point|exactly two ordinary files" -Action {
                 & $auditScript -McpExe (Join-Path $output "vibris-mcp.exe") `
-                    -PatchedIrisJar (Join-Path $output $jarName) `
+                    -VibrisModJar (Join-Path $output $jarName) `
                     -DeliveryDirectory $auditLinkDelivery | Out-Null
             }
     }
@@ -980,7 +982,7 @@ try
     {
         Assert-ExpectedFailure -Scenario "audit-reparse-ancestor" -Pattern "reparse point" -Action {
             & $auditScript -McpExe (Join-Path $output "vibris-mcp.exe") `
-                -PatchedIrisJar (Join-Path $output $jarName) `
+                -VibrisModJar (Join-Path $output $jarName) `
                 -DeliveryDirectory (Join-Path $auditJunction "audit-delivery") | Out-Null
         }
     }
@@ -989,8 +991,8 @@ try
         if (Test-Path -LiteralPath $auditJunction) { Remove-Item -LiteralPath $auditJunction -Force }
     }
 
-    $mismatchedJar = Join-Path $inputRoot "iris-fabric-mismatch-local.jar"
-    Copy-Item -LiteralPath $patchedJar -Destination $mismatchedJar
+    $mismatchedJar = Join-Path $inputRoot "vibris-fabric-mismatch-local.jar"
+    Copy-Item -LiteralPath $vibrisModJar -Destination $mismatchedJar
     $mismatchArchive = [System.IO.Compression.ZipFile]::Open(
         $mismatchedJar, [System.IO.Compression.ZipArchiveMode]::Update)
     try
@@ -1009,10 +1011,10 @@ try
     }
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash -JarName $jarName -JarHash $jarHash
 
-    $preRecordJar = Join-Path $inputRoot "iris-fabric-prerecord-local.jar"
-    $preRecordReplacement = Join-Path $inputRoot "iris-fabric-prerecord-replacement-local.jar"
-    Copy-Item -LiteralPath $patchedJar -Destination $preRecordJar
-    Copy-Item -LiteralPath $patchedJar -Destination $preRecordReplacement
+    $preRecordJar = Join-Path $inputRoot "vibris-fabric-prerecord-local.jar"
+    $preRecordReplacement = Join-Path $inputRoot "vibris-fabric-prerecord-replacement-local.jar"
+    Copy-Item -LiteralPath $vibrisModJar -Destination $preRecordJar
+    Copy-Item -LiteralPath $vibrisModJar -Destination $preRecordReplacement
     $preRecordArchive = [System.IO.Compression.ZipFile]::Open(
         $preRecordReplacement, [System.IO.Compression.ZipArchiveMode]::Update)
     try
@@ -1029,7 +1031,7 @@ try
     Copy-Item -LiteralPath $releaseMcp -Destination $preRecordAuditDelivery
     Copy-Item -LiteralPath $preRecordReplacement -Destination $preRecordAuditDelivery
     $preRecordAuditResult = @(& $auditScript -McpExe $releaseMcp `
-        -PatchedIrisJar (Join-Path $preRecordAuditDelivery `
+        -VibrisModJar (Join-Path $preRecordAuditDelivery `
             (Split-Path -Leaf $preRecordReplacement)) `
         -DeliveryDirectory $preRecordAuditDelivery)
     if (($preRecordAuditResult -join "`n") -notmatch "PASS source_audit=true")
@@ -1148,7 +1150,7 @@ try
         $postAuditPackageFailure = $null
         try
         {
-            Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output `
+            Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output `
                 -AfterAuditReady $postAuditReady -AfterAuditAck $postAuditAck | Out-Null
         }
         catch
@@ -1200,7 +1202,7 @@ try
                 $metadataRoots.Add((Join-Path $buildRoot (
                     ".delivery-transactions\" + (Get-TargetKey -Path $parallelTarget))))
                 $parallelSession = New-ProbeBuildSession `
-                    -Mcp $releaseMcp -Jar $patchedJar -Mutation "None"
+                    -Mcp $releaseMcp -Jar $vibrisModJar -Mutation "None"
                 $parallelSessions.Add($parallelSession)
                 $parallelTargets.Add($parallelTarget)
                 $parallelJobs.Add((Start-Job -ScriptBlock {
@@ -1208,7 +1210,7 @@ try
                     try
                     {
                         $packageOutput = @(& $PackageScript `
-                            -McpExe $Mcp -PatchedIrisJar $Jar `
+                            -McpExe $Mcp -VibrisModJar $Jar `
                             -BuildReceipt $Receipt -OutputDirectory $Target 3>&1)
                         [pscustomobject] @{
                             lane = $Lane
@@ -1224,7 +1226,7 @@ try
                             text = $_.Exception.Message
                         }
                     }
-                } -ArgumentList $parallelLane, $packageScript, $releaseMcp, $patchedJar,
+                } -ArgumentList $parallelLane, $packageScript, $releaseMcp, $vibrisModJar,
                     $parallelSession.receipt, $parallelTarget))
             }
             [void] (Wait-Job -Job @($parallelJobs) -Timeout 90)
@@ -1266,7 +1268,7 @@ try
             $parallelTarget = $parallelTargets[$parallelLane - 1]
             if (-not (Test-Path -LiteralPath $parallelTarget))
             {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar `
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar `
                     -Target $parallelTarget | Out-Null
             }
             Assert-ExactDelivery -Directory $parallelTarget -McpHash $mcpHash `
@@ -1280,14 +1282,14 @@ try
     $raceInputRoot = Join-Path $scope "race-inputs"
     [void] (New-Item -ItemType Directory -Path $raceInputRoot)
     $raceMcp = Join-Path $raceInputRoot "vibris-mcp.exe"
-    $raceJar = Join-Path $raceInputRoot "iris-fabric-race-local.jar"
-    $raceReplacement = Join-Path $raceInputRoot "iris-fabric-race-replacement-local.jar"
+    $raceJar = Join-Path $raceInputRoot "vibris-fabric-race-local.jar"
+    $raceReplacement = Join-Path $raceInputRoot "vibris-fabric-race-replacement-local.jar"
     Copy-Item -LiteralPath $releaseMcp -Destination $raceMcp
     $raceMcpStream = [System.IO.File]::Open(
         $raceMcp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
     try { $raceMcpStream.SetLength($raceMcpStream.Length + 67108864) }
     finally { $raceMcpStream.Dispose() }
-    Copy-Item -LiteralPath $patchedJar -Destination $raceJar
+    Copy-Item -LiteralPath $vibrisModJar -Destination $raceJar
     Copy-Item -LiteralPath $mismatchedJar -Destination $raceReplacement
     $raceOutput = Join-Path $scope "race-delivery"
     $raceKey = Get-TargetKey -Path $raceOutput
@@ -1331,7 +1333,7 @@ try
     $pendingKey = Get-TargetKey -Path $pendingOutput
     $pendingRoot = Join-Path $buildRoot ".delivery-transactions\$pendingKey"
     $metadataRoots.Add($pendingRoot)
-    $pendingResult = @(Invoke-Package -Mcp $releaseMcp -Jar $patchedJar `
+    $pendingResult = @(Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar `
         -Target $pendingOutput -CleanupFailure "ManifestLocked")
     if (($pendingResult -join "`n") -notmatch "cleanup_pending=true")
     {
@@ -1346,7 +1348,7 @@ try
         throw "Committed cleanup_pending publication did not retain terminal metadata."
     }
     $pendingRecovery = @(Invoke-Package `
-        -Mcp $releaseMcp -Jar $patchedJar -Target $pendingOutput)
+        -Mcp $releaseMcp -Jar $vibrisModJar -Target $pendingOutput)
     Assert-ExactDelivery -Directory $pendingOutput -McpHash $mcpHash `
         -JarName $jarName -JarHash $jarHash
     if ((Test-Path -LiteralPath $pendingRoot) -or
@@ -1385,7 +1387,7 @@ try
         $metadataOutput = Join-Path $scope "metadata-$($metadataCase.name)-delivery"
         [void] (New-Item -ItemType Directory -Path $metadataOutput)
         Copy-Item -LiteralPath $releaseMcp -Destination $metadataOutput
-        Copy-Item -LiteralPath $patchedJar -Destination $metadataOutput
+        Copy-Item -LiteralPath $vibrisModJar -Destination $metadataOutput
         $metadataMcpHash = (Get-FileHash -Algorithm SHA256 `
             -LiteralPath (Join-Path $metadataOutput "vibris-mcp.exe")).Hash
         $metadataJarHash = (Get-FileHash -Algorithm SHA256 `
@@ -1394,7 +1396,7 @@ try
             present = $true
             mcp = Get-Record -Path (Join-Path $metadataOutput "vibris-mcp.exe") `
                 -Name "vibris-mcp.exe"
-            iris = Get-Record -Path (Join-Path $metadataOutput $jarName) -Name $jarName
+            mod = Get-Record -Path (Join-Path $metadataOutput $jarName) -Name $jarName
         }
         $metadataKey = Get-TargetKey -Path $metadataOutput
         $metadataRoot = Join-Path $buildRoot ".delivery-transactions\$metadataKey"
@@ -1424,7 +1426,7 @@ try
 
         Assert-ExpectedFailure -Scenario "cleanup-$($metadataCase.name)" `
             -Pattern $metadataCase.pattern -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar `
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar `
                     -Target $metadataOutput -CleanupFailure $metadataCase.failure | Out-Null
             }
         Assert-ExactDelivery -Directory $metadataOutput -McpHash $metadataMcpHash `
@@ -1449,7 +1451,7 @@ try
         }
 
         $metadataRecovery = @(Invoke-Package `
-            -Mcp $releaseMcp -Jar $patchedJar -Target $metadataOutput)
+            -Mcp $releaseMcp -Jar $vibrisModJar -Target $metadataOutput)
         Assert-ExactDelivery -Directory $metadataOutput -McpHash $metadataMcpHash `
             -JarName $jarName -JarHash $metadataJarHash
         if (Test-Path -LiteralPath $metadataRoot)
@@ -1472,12 +1474,12 @@ try
         $abortOutput = Join-Path $scope "abort-$($abortState.ToLowerInvariant())-delivery"
         [void] (New-Item -ItemType Directory -Path $abortOutput)
         Copy-Item -LiteralPath $releaseMcp -Destination $abortOutput
-        Copy-Item -LiteralPath $patchedJar -Destination $abortOutput
+        Copy-Item -LiteralPath $vibrisModJar -Destination $abortOutput
         $abortRecord = [ordered] @{
             present = $true
             mcp = Get-Record -Path (Join-Path $abortOutput "vibris-mcp.exe") `
                 -Name "vibris-mcp.exe"
-            iris = Get-Record -Path (Join-Path $abortOutput $jarName) -Name $jarName
+            mod = Get-Record -Path (Join-Path $abortOutput $jarName) -Name $jarName
         }
         $abortKey = Get-TargetKey -Path $abortOutput
         $abortRoot = Join-Path $buildRoot ".delivery-transactions\$abortKey"
@@ -1488,7 +1490,7 @@ try
             $abortPublish = Join-Path $abortRoot "publish"
             [void] (New-Item -ItemType Directory -Path $abortPublish)
             Copy-Item -LiteralPath $releaseMcp -Destination $abortPublish
-            Copy-Item -LiteralPath $patchedJar -Destination $abortPublish
+            Copy-Item -LiteralPath $vibrisModJar -Destination $abortPublish
         }
         $abortPrevious = Join-Path $abortRoot "previous"
         if ($abortState -in @("OLD_MOVED", "PUBLISH_INTENT"))
@@ -1521,7 +1523,7 @@ try
 
         Assert-ExpectedFailure -Scenario "abort-$($abortState.ToLowerInvariant())-state-locked" `
             -Pattern "being used by another process|access.*denied|access the file" -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar `
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar `
                     -Target $abortOutput -CleanupFailure "StateLocked" | Out-Null
             }
         Assert-ExactDelivery -Directory $abortOutput -McpHash $mcpHash `
@@ -1544,7 +1546,7 @@ try
         }
 
         $abortRecovery = @(Invoke-Package `
-            -Mcp $releaseMcp -Jar $patchedJar -Target $abortOutput)
+            -Mcp $releaseMcp -Jar $vibrisModJar -Target $abortOutput)
         Assert-ExactDelivery -Directory $abortOutput -McpHash $mcpHash `
             -JarName $jarName -JarHash $jarHash
         if ((Test-Path -LiteralPath $abortRoot) -or
@@ -1559,7 +1561,7 @@ try
     $failureCleanupOutput = Join-Path $scope "abort-failure-cleanup-delivery"
     [void] (New-Item -ItemType Directory -Path $failureCleanupOutput)
     Copy-Item -LiteralPath $releaseMcp -Destination $failureCleanupOutput
-    Copy-Item -LiteralPath $patchedJar -Destination $failureCleanupOutput
+    Copy-Item -LiteralPath $vibrisModJar -Destination $failureCleanupOutput
     $failureCleanupKey = Get-TargetKey -Path $failureCleanupOutput
     $failureCleanupRoot = Join-Path $buildRoot ".delivery-transactions\$failureCleanupKey"
     $metadataRoots.Add($failureCleanupRoot)
@@ -1587,7 +1589,7 @@ try
         throw "Failure-path cleanup retained a payload directory."
     }
     $failureCleanupRecovery = @(Invoke-Package `
-        -Mcp $releaseMcp -Jar $patchedJar -Target $failureCleanupOutput)
+        -Mcp $releaseMcp -Jar $vibrisModJar -Target $failureCleanupOutput)
     Assert-ExactDelivery -Directory $failureCleanupOutput -McpHash $mcpHash `
         -JarName $jarName -JarHash $jarHash
     if ((Test-Path -LiteralPath $failureCleanupRoot) -or
@@ -1602,7 +1604,7 @@ try
     $previous = [ordered] @{
         present = $true
         mcp = Get-Record -Path (Join-Path $output "vibris-mcp.exe") -Name "vibris-mcp.exe"
-        iris = Get-Record -Path (Join-Path $output $jarName) -Name $jarName
+        mod = Get-Record -Path (Join-Path $output $jarName) -Name $jarName
     }
     $committedManifest = [ordered] @{
         schema_version = 2
@@ -1631,7 +1633,7 @@ try
     {
         Assert-ExpectedFailure -Scenario "locked-postcommit-cleanup" `
             -Pattern "being used by another process|access the file" -Action {
-                Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output | Out-Null
+                Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output | Out-Null
             }
     }
     finally
@@ -1650,11 +1652,11 @@ try
     [System.IO.File]::WriteAllText((Join-Path $transactionRoot "state.txt"), "OLD_MOVED")
     Assert-ExpectedFailure -Scenario "partial-rollback-not-restored" `
         -Pattern "must contain exactly two ordinary files|does not match" -Action {
-            Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output | Out-Null
+            Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output | Out-Null
         }
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash -JarName $jarName -JarHash $jarHash
     [System.IO.File]::WriteAllText((Join-Path $transactionRoot "state.txt"), "COMMITTED")
-    [void] (Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target $output)
+    [void] (Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target $output)
 
     [void] (New-Item -ItemType Directory -Path $transactionRoot -Force)
     $preparingManifest = [ordered] @{
@@ -1673,7 +1675,7 @@ try
     $partialNext = Join-Path $transactionRoot "next"
     [void] (New-Item -ItemType Directory -Path $partialNext)
     Copy-Item -LiteralPath $releaseMcp -Destination (Join-Path $partialNext "vibris-mcp.exe")
-    [void] (Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target ($output + "\"))
+    [void] (Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target ($output + "\"))
     Assert-ExactDelivery -Directory $output -McpHash $mcpHash -JarName $jarName -JarHash $jarHash
     $log.Add("PASS scenario=fixed-validation-recovery partial_preparing_snapshot=true")
 
@@ -1684,7 +1686,7 @@ try
     $overlapMcp = Join-Path $overlapRoot "vibris-mcp.exe"
     $overlapJar = Join-Path $overlapRoot $jarName
     Copy-Item -LiteralPath $releaseMcp -Destination $overlapMcp
-    Copy-Item -LiteralPath $patchedJar -Destination $overlapJar
+    Copy-Item -LiteralPath $vibrisModJar -Destination $overlapJar
     Assert-ExpectedFailure -Scenario "transaction-input-overlap" -Pattern "inside its private transaction root" `
         -Action { Invoke-Package -Mcp $overlapMcp -Jar $overlapJar -Target $overlapOutput | Out-Null }
     if (-not (Test-Path -LiteralPath $overlapMcp -PathType Leaf) -or
@@ -1695,14 +1697,14 @@ try
 
     [void] (New-Item -ItemType Junction -Path $junction -Target $outsideRoot)
     Assert-ExpectedFailure -Scenario "nested-junction-output" -Pattern "reparse point" -Action {
-        Invoke-Package -Mcp $releaseMcp -Jar $patchedJar -Target (Join-Path $junction "delivery") | Out-Null
+        Invoke-Package -Mcp $releaseMcp -Jar $vibrisModJar -Target (Join-Path $junction "delivery") | Out-Null
     }
 
     [void] (New-Item -ItemType Directory -Path $linkInput)
     $linkedMcp = Join-Path $linkInput "vibris-mcp.exe"
     [void] (New-Item -ItemType SymbolicLink -Path $linkedMcp -Target $releaseMcp)
     Assert-ExpectedFailure -Scenario "reparse-leaf-input" -Pattern "reparse point" -Action {
-        Invoke-Package -Mcp $linkedMcp -Jar $patchedJar `
+        Invoke-Package -Mcp $linkedMcp -Jar $vibrisModJar `
             -ReceiptMcp $releaseMcp -Target (Join-Path $scope "link-delivery") | Out-Null
     }
 
@@ -1715,7 +1717,7 @@ try
     {
         Assert-ExpectedFailure -Scenario "standalone-audit-lock" -Pattern "already running" -Action {
             & $auditScript -McpExe (Join-Path $output "vibris-mcp.exe") `
-                -PatchedIrisJar (Join-Path $output $jarName) -DeliveryDirectory $output | Out-Null
+                -VibrisModJar (Join-Path $output $jarName) -DeliveryDirectory $output | Out-Null
         }
     }
     finally

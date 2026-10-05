@@ -141,6 +141,13 @@ void profile_retry_preserves_exact_preset_id() {
 }
 
 void matrix_normalization_strict_v2() {
+	const Json single{{"matrix", {{"sources", Json::array({"baseline"})},
+		{"configs", Json::array({"default"})}}}};
+	const auto action_case = vibris::mcp::detail::normalize_matrix_result(
+		terminal_json(completed_profile_message()), single);
+	require(action_case.at("success") == true && action_case.at("cases").size() == 1 &&
+		action_case.at("cases")[0].at("case_id") == "baseline--default",
+		"action-sequence matrix step was not normalized as one case");
 	const Json arguments{{"frames", 32}, {"warmup_frames", 4}, {"result_detail", "full"},
 		{"matrix", {{"sources", Json::array({"baseline", "candidate"})},
 		{"configs", Json::array({"default"})}}}};
@@ -173,7 +180,7 @@ void visual_normalization_strict_v2() {
 	const auto result = vibris::mcp::detail::normalize_action_sequence_result(
 		terminal_json(completed_visual_message()), "ab_compare");
 	require(result.at("success") == true && result.at("frame_ids") == Json::array({41, 42}) &&
-		result.at("comparison").at("passed") == true && result.at("artifacts").size() == 2 &&
+		result.at("comparisons").empty() && result.at("artifacts").size() == 2 &&
 		result.at("action_receipts").size() == 7 && result.at("prelude_receipts").size() == 2 &&
 		result.at("action_receipts").at(0).at("kind") == "ACTION_KIND_RESET_TEMPORAL_STATE" &&
 		result.at("action_receipts").at(0).at("reset_temporal").at("completed_at_unix_ms") == 1001 &&
@@ -182,8 +189,8 @@ void visual_normalization_strict_v2() {
 		!result.contains("action_results"),
 		"visual normalization did not derive its receipt from strict-v2 action details");
 	const auto guards = vibris::mcp::visual_comparison_guards(result, true);
-	require(guards.at("passed") == true && guards.at("two_ordered_temporal_reset_receipts") == true,
-		"strict-v2 visual receipt failed deterministic temporal-reset guards");
+	require(guards.at("passed") == false && guards.at("two_ordered_temporal_reset_receipts") == true,
+		"capture-only receipt must require a local comparison verdict while retaining reset guards");
 }
 
 void screenshot_result_compact_strict_v2() {

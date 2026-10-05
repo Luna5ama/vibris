@@ -74,6 +74,15 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
 
     @Volatile
     private var activePassMappingSha256: String = ""
+    @Volatile
+    private var observedCatalogContext = dev.vibris.protocol.v2.CatalogContext.getDefaultInstance()
+
+    fun catalogContext(generation: Long): dev.vibris.protocol.v2.CatalogContext =
+        observedCatalogContext.let { context ->
+            if (generation == context.shaderGeneration &&
+                context.activeSourceUuid == activator.activeSnapshot()?.uuid.orEmpty()) context
+            else dev.vibris.protocol.v2.CatalogContext.newBuilder().setShaderGeneration(generation).build()
+        }
 
     @Throws(Failure::class)
     fun execute(job: CoreJob, progress: Consumer<JobStage>): TerminalResult {
@@ -202,6 +211,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
     fun runtime(): VibrisRuntimeAdapter = runtime
 
     fun observeCatalog(catalog: CompileCatalog, loadedAtUnixMs: Long = System.currentTimeMillis()) {
+        observedCatalogContext = dev.vibris.protocol.v2.CatalogContext.newBuilder()
+            .setShaderGeneration(catalog.shaderGeneration).setActiveSourceUuid(activator.activeSnapshot()?.uuid.orEmpty())
+            .setSettingsSha256(activeShaderSettings?.settingsSha256.orEmpty()).build()
         activePassMappingSha256 = catalog.mappingSha256
         activeShaderLoadedAtUnixMs = loadedAtUnixMs
     }
@@ -262,7 +274,6 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             val reload = reload(job, settings, progress, deadline)
             val catalog = await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline)
             val loadedAtUnixMs = System.currentTimeMillis()
-            observeCatalog(catalog, loadedAtUnixMs)
             if (activation != null) {
                 try {
                     activator.commit(activation)
@@ -270,6 +281,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
                     throw Failure(failure.code, failure.message)
                 }
             }
+            observeCatalog(catalog, loadedAtUnixMs)
             return CompileResult(reload, catalog, loadedAtUnixMs)
         } catch (failure: Failure) {
             if (activation != null) {
@@ -1293,6 +1305,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         @JvmField val actionReceipts: List<ActionReceipt>,
         @JvmField val preludeReceipts: List<ActionReceipt>,
         internal val cleanupBarrier: CompletionStage<Void>? = null,
+        @JvmField val details: Map<String, String> = emptyMap(),
     ) : Exception(message) {
         constructor(code: ErrorCode, message: String?) :
             this(
@@ -1360,6 +1373,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             actionReceipts,
             preludeReceipts,
             cleanupBarrier,
+            details,
         ).also { replacement -> suppressed.forEach(replacement::addSuppressed) }
 
         fun withActionReceipts(actions: List<ActionReceipt>, preludes: List<ActionReceipt>): Failure = Failure(
@@ -1372,6 +1386,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             java.util.List.copyOf(actions),
             java.util.List.copyOf(preludes),
             cleanupBarrier,
+            details,
         ).also { replacement -> suppressed.forEach(replacement::addSuppressed) }
 
         fun requiringRecovery(value: RestorationReceipt, detail: String): Failure = Failure(
@@ -1384,7 +1399,11 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             actionReceipts,
             preludeReceipts,
             cleanupBarrier,
+            details,
         ).also { replacement -> suppressed.forEach(replacement::addSuppressed) }
+
+        fun withDetails(value: Map<String, String>): Failure = Failure(code, message, artifacts, diagnostics,
+            restoration, holdOwnership, actionReceipts, preludeReceipts, cleanupBarrier, value)
     }
 
     enum class DeterministicFailurePhase {

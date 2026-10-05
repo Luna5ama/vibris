@@ -309,7 +309,43 @@ void distinct_uuid_without_dedup() {
 }
 
 using TestCase = std::pair<std::string_view, void (*)()>;
-constexpr std::array<TestCase, 7> test_cases{{
+void commit_patch_is_frozen_and_isolated() {
+    TempDirectory temporary("patch");
+    const auto repository = temporary.path() / "repo";
+    const auto pending = temporary.path() / "pending";
+    fs::create_directories(repository);
+    fs::create_directories(pending);
+    initialize_repository(repository);
+    write_text(repository / "shaders" / "main.glsl", "before\n");
+    commit_all(repository, "base");
+    const auto patch = repository / "change.patch";
+    write_text(patch, "diff --git a/shaders/main.glsl b/shaders/main.glsl\n"
+        "--- a/shaders/main.glsl\n+++ b/shaders/main.glsl\n@@ -1 +1 @@\n-before\n+after\n");
+    const auto index_before = read_text(repository / ".git" / "index");
+    SourcePreparer preparer(repository, pending, {.max_total_bytes = kMiB, .max_files = 100});
+    auto baseline = preparer.prepare_commit("HEAD");
+    auto candidate = preparer.prepare_commit("HEAD", "change.patch");
+    require(candidate.reference().patch_sha256().size() == 64 &&
+        candidate.reference().patch_sha256() == candidate.reference().origin().commit().patch_sha256(), "patch SHA provenance missing");
+    require(candidate.reference().requested_revision().starts_with("HEAD+patch:") &&
+        candidate.reference().shader_tree_id() != baseline.reference().shader_tree_id() &&
+        candidate.reference().snapshot_sha256() != baseline.reference().snapshot_sha256(), "patched source retained baseline identity");
+    require(read_text(repository / "shaders" / "main.glsl") == "before\n" &&
+        read_text(repository / ".git" / "index") == index_before, "patch modified worktree or primary index");
+    require(read_text(candidate.directory() / "source.patch") == read_text(patch), "patch was not frozen");
+    write_text(patch, "diff --git a/shaders/main.glsl b/shaders/main.glsl\n"
+        "--- a/shaders/main.glsl\n+++ b/shaders/main.glsl\n@@ -1 +1 @@\n-wrong\n+after\n");
+    require(capture_error_code([&] { static_cast<void>(preparer.prepare_commit("HEAD", patch)); }) == "PATCH_APPLY_FAILED",
+        "conflicting patch was accepted");
+    write_text(patch, "diff --git a/other b/other\n--- /dev/null\n+++ b/other\n@@ -0,0 +1 @@\n+outside\n");
+    require(capture_error_code([&] { static_cast<void>(preparer.prepare_commit("HEAD", patch)); }) == "PATCH_OUTSIDE_SHADERS",
+        "patch outside shaders was accepted");
+    require(capture_error_code([&] { static_cast<void>(preparer.prepare_commit("HEAD", "missing.patch")); }) == "PATCH_NOT_FOUND",
+        "missing patch error is wrong");
+}
+
+constexpr std::array<TestCase, 8> test_cases{{
+    {"CommitPatchFrozenAndIsolated", commit_patch_is_frozen_and_isolated},
     {"ValidRelativeArchiveEntry", valid_relative_archive_entry},
     {"RejectArchiveTraversal", reject_archive_traversal},
     {"RejectSymlinkOrReparse", reject_symlink_or_reparse},

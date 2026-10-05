@@ -57,12 +57,15 @@ class RuntimeActionProtocolTest {
             unfiltered,
             canonicalGpuMetrics().replace("[800,900,1000]", "[]"),
         )
-        assertInvalidMetrics(
+        val missing = RuntimeActionProtocol.gpuMetricsReceipt(
             Action.newBuilder()
                 .setGetGpuMetrics(GetGpuMetrics.newBuilder().setFrames(3).addMetricIds("missing"))
                 .build(),
             canonicalGpuMetrics(),
         )
+        assertTrue(missing.metricsList.isEmpty())
+        assertEquals("missing", missing.missingList.single().metricId)
+        assertEquals(3, missing.missingList.single().suggestionsCount)
     }
 
     @Test

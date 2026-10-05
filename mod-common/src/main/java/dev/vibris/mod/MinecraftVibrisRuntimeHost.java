@@ -971,6 +971,12 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	}
 
 	@Override
+	public CompletionStage<dev.vibris.api.TextureAnalysisResult> analyzeTexture(
+		dev.vibris.api.TextureAnalysisRequest request, ArtifactSink sink, CancellationToken cancellation) {
+		return capture.analyzeTexture(request, sink, cancellation);
+	}
+
+	@Override
 	public CompletionStage<CaptureResult> capturePatchedShaders(
 		String artifactName,
 		ArtifactSink sink,

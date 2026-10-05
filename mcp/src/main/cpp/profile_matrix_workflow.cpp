@@ -1,6 +1,8 @@
 #include "profile_matrix_workflow.hpp"
 
 #include "config_document.hpp"
+#include "experiment_summary.hpp"
+#include "preset_previews.hpp"
 #include "paired_benchmark.hpp"
 #include "source_preparer.hpp"
 #include "state_error.hpp"
@@ -17,6 +19,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -356,7 +359,7 @@ Json freeze_source(SourcePreparer& preparer, std::vector<PreparedSource>& snapsh
 	const Json& source, const std::string& job_id) {
 	const auto kind = source.at("kind").get<std::string>();
 	snapshots.emplace_back(kind == "commit"
-		? preparer.prepare_commit(source.at("revision").get<std::string>())
+		? preparer.prepare_commit(source.at("revision").get<std::string>(), fs::path(source.value("patch", std::string{})))
 		: preparer.prepare_workspace());
 	const auto& reference = snapshots.back().reference();
 	const bool commit = reference.origin().has_commit();
@@ -371,6 +374,7 @@ Json freeze_source(SourcePreparer& preparer, std::vector<PreparedSource>& snapsh
 		{"requested_revision", reference.requested_revision()},
 		{"resolved_revision", reference.resolved_revision()},
 		{"snapshot_sha256", reference.snapshot_sha256()},
+		{"patch_sha256", reference.patch_sha256()},
 		{"archive_format", ::vibris::control::v2::SourceArchiveFormat_Name(reference.archive_format())},
 		{"compressed_bytes", reference.compressed_bytes()},
 		{"vcs_checkout_state", ::vibris::control::v2::VcsCheckoutState_Name(reference.vcs_checkout_state())},
@@ -394,7 +398,7 @@ Json freeze_arguments(const fs::path& workspace_root, const fs::path& state_dire
 		if (arguments.contains(name)) arguments[name] = freeze_source(preparer, snapshots, arguments.at(name), job_id);
 	};
 	freeze_field("source");
-	freeze_field("baseline");
+	if (arguments.contains("baseline") && arguments.at("baseline").contains("kind")) freeze_field("baseline");
 	freeze_field("candidate");
 	for (const auto* variant : {"a", "b"}) {
 		if (arguments.contains(variant) && arguments.at(variant).contains("source")) {
@@ -415,6 +419,7 @@ Json freeze_arguments(const fs::path& workspace_root, const fs::path& state_dire
 
 Json profile_matrix_steps(const Json& arguments, std::string_view job_id) {
 	Json result = Json::array();
+	Json cases = Json::array();
 	for (const auto& source_axis : arguments.at("matrix").at("sources")) {
 		const auto source_id = source_axis.get<std::string>();
 		auto source = named_value(arguments.at("sources"), source_id, "source");
@@ -432,8 +437,33 @@ Json profile_matrix_steps(const Json& arguments, std::string_view job_id) {
 				if (arguments.contains(field)) nested[field] = arguments.at(field);
 			}
 			if (config.contains("values")) nested["config"] = config.at("values");
-			result.push_back({{"id", source_id + "--" + config_id}, {"kind", "case"},
+			cases.push_back({{"id", source_id + "--" + config_id}, {"kind", "case"},
 				{"tool_name", "vibris_run_recipe"}, {"arguments", std::move(nested)}});
+		}
+	}
+	const auto presets = arguments.value("__vibris_presets", Json::array({Json::object()}));
+	std::mt19937 random(arguments.value("random_seed", std::uint32_t{}));
+	for (const auto& preset : presets) {
+		for (int round = 0; round < arguments.value("rounds", 1); ++round) {
+			std::vector<std::size_t> order(cases.size());
+			std::iota(order.begin(), order.end(), 0);
+			const auto mode = arguments.value("order", std::string("palindrome"));
+			if (mode == "randomized") std::shuffle(order.begin(), order.end(), random);
+			if (mode == "palindrome") {
+				const auto forward = order;
+				order.insert(order.end(), forward.rbegin(), forward.rend());
+			}
+			for (std::size_t repeat = 0; repeat < order.size(); ++repeat) {
+				auto step = cases[order[repeat]];
+				auto& nested = step["arguments"];
+				nested.update(preset);
+				nested["__vibris_round"] = round;
+				nested["__vibris_run"] = repeat;
+				nested["result_detail"] = "full";
+				step["id"] = nested.value("preset_id", std::string("scene")) + "--r" + std::to_string(round) +
+					"--n" + std::to_string(repeat) + "--" + step["id"].get<std::string>();
+				result.push_back(std::move(step));
+			}
 		}
 	}
 	return result;
@@ -468,17 +498,23 @@ Json compile_validation_steps(const Json& arguments, std::string_view job_id) {
 
 Json matrix_steps(const Json& arguments) {
 	Json result = Json::array();
+	const auto presets = arguments.value("__vibris_presets", Json::array({Json::object()}));
+	for (const auto& preset : presets) {
 	for (const auto& source_axis : arguments.at("matrix").at("sources")) {
 		const auto source_id = source_axis.get<std::string>();
 		for (const auto& config_axis : arguments.at("matrix").at("configs")) {
 			const auto config_id = config_axis.get<std::string>();
 			Json nested = arguments;
+			nested.erase("presets");
+			nested.erase("__vibris_presets");
+			nested.update(preset);
 			nested["sources"] = Json::array({named_value(arguments.at("sources"), source_id, "source")});
 			nested["configs"] = Json::array({named_value(arguments.at("configs"), config_id, "config")});
 			nested["matrix"] = {{"sources", Json::array({source_id})}, {"configs", Json::array({config_id})}};
-			result.push_back({{"id", source_id + "--" + config_id}, {"kind", "case"},
+			result.push_back({{"id", nested.value("preset_id", std::string("scene")) + "--" + source_id + "--" + config_id}, {"kind", "case"},
 				{"tool_name", "vibris_run_matrix"}, {"arguments", std::move(nested)}});
 		}
+	}
 	}
 	return result;
 }
@@ -632,6 +668,8 @@ DurableJobWorkflow::Record DurableJobWorkflow::create_record(
 	if (steps.empty() || steps.size() > maximum_steps) {
 		throw StateError("INVALID_JOB", "A durable job must contain between 1 and 4096 steps.");
 	}
+	if ((arguments.value("recipe", std::string{}) == "profile_matrix" || tool_name == "vibris_run_matrix") && steps.size() > 512)
+		throw StateError("INVALID_JOB", "Experiment expansion exceeds 512 steps.");
 	const auto created = unix_ms();
 	Json request{{"schema_version", durable_schema_version}, {"workspace_id", workspace_id_}, {"job_id", job_id},
 		{"kind", arguments.value("recipe", std::string(tool_name))}, {"tool_name", tool_name},
@@ -836,22 +874,37 @@ Json DurableJobWorkflow::final_result(const Record& record) const {
 		Json artifacts = Json::array();
 		std::size_t passed = 0;
 		std::size_t failed = 0;
-		for (const auto& receipt : receipts) {
+		for (std::size_t index = 0; index < receipts.size(); ++index) {
+			const auto& receipt = receipts[index];
 			const auto outcome = receipt_outcome(receipt);
 			if (const auto* value = std::get_if<Json>(&outcome)) {
 				for (const auto& item : value->value("cases", Json::array())) {
 					if (item.value("status", std::string{}) == "passed") ++passed;
 					else ++failed;
-					cases.push_back(item);
+					auto run = item;
+					const auto& args = request.at("steps")[index].at("arguments");
+					run["preset_id"] = args.value("preset_id", std::string{});
+					run["round"] = args.value("__vibris_round", 0);
+					run["run"] = args.value("__vibris_run", 0);
+					if (!run.contains("provenance")) run["provenance"] = value->value("provenance", Json::object());
+					cases.push_back(std::move(run));
 				}
 				for (const auto& item : value->value("artifacts", Json::array())) artifacts.push_back(item);
 			} else ++failed;
 		}
-		return {{"success", failed == 0 && passed == request.at("steps").size()}, {"kind", kind},
+		auto summary = summarize_experiment(cases, request.at("arguments"));
+		const auto csv_path = state_directory_ / request.at("job_id").get<std::string>() / "measurements.csv";
+		atomic_write(csv_path, experiment_csv(cases), true);
+		artifacts.push_back({{"relative_path", csv_path.string()}, {"format", "ARTIFACT_FORMAT_CSV"},
+			{"media_type", "text/csv"}, {"role", "ARTIFACT_ROLE_RAW_SAMPLES"}});
+		Json result{{"success", failed == 0 && passed == request.at("steps").size()}, {"kind", kind},
+			{"result_detail", request.at("arguments").value("result_detail", std::string("metrics"))},
 			{"job_id", request.at("job_id")}, {"status", failed == 0 ? "completed" : "completed_with_failures"},
 			{"requested_cases", request.at("steps").size()}, {"completed_cases", receipts.size()},
 			{"passed", passed}, {"failed", failed}, {"cases", std::move(cases)},
 			{"artifacts", std::move(artifacts)}};
+		result.update(summary);
+		return result;
 	}
 	if (kind == "compile_validate") {
 		Json cases = Json::array();
@@ -878,15 +931,24 @@ Json DurableJobWorkflow::final_result(const Record& record) const {
 		Json cases = Json::array();
 		Json artifacts = Json::array();
 		bool success = true;
-		for (const auto& receipt : receipts) {
+		for (std::size_t index = 0; index < receipts.size(); ++index) {
+			const auto& receipt = receipts[index];
 			success = success && receipt.at("success").get<bool>();
 			if (!receipt.at("success").get<bool>()) continue;
 			const auto& value = receipt.at("result");
 			success = success && value.value("success", true);
-			for (const auto& item : value.value("cases", Json::array())) cases.push_back(item);
+			for (auto item : value.value("cases", Json::array())) {
+				item["preset_id"] = request.at("steps")[index].at("arguments").value("preset_id", std::string{});
+				cases.push_back(std::move(item));
+			}
 			for (const auto& item : value.value("artifacts", Json::array())) artifacts.push_back(item);
 		}
-		return {{"success", success}, {"kind", "matrix"}, {"job_id", request.at("job_id")},
+        if (request.at("arguments").contains("__vibris_preview")) {
+            auto preview = finish_preset_previews(workspace_root_, request.at("arguments")["__vibris_preview"], cases);
+            preview["job_id"] = request.at("job_id");
+            return preview;
+        }
+        return {{"success", success}, {"kind", "matrix"}, {"job_id", request.at("job_id")},
 			{"status", success ? "completed" : "completed_with_failures"},
 			{"cases", std::move(cases)}, {"artifacts", std::move(artifacts)}};
 	}
@@ -926,6 +988,7 @@ Json DurableJobWorkflow::snapshot(
 		{"last_error", state.at("last_error")}, {"event_cursor", state.at("event_sequence")},
 		{"events", events(state.at("job_id").get<std::string>(), event_cursor)}};
 	if (include_result && (workflow_state == "completed" || workflow_state == "failed")) {
+		result["full_result_path"] = (state_directory_ / state.at("job_id").get<std::string>() / "result.json").string();
 		auto durable_result = Json::parse(read_file(
 			state_directory_ / state.at("job_id").get<std::string>() / "result.json"));
 		refresh_artifact_expiry(durable_result);
@@ -985,13 +1048,13 @@ ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 			const auto state = record.state.at("workflow_state").get<std::string>();
 			if (wait_complete_state(state)) {
 				auto value = snapshot(record, cursor, state == "completed" || state == "failed");
-				value.erase("events");
+				if (!arguments.contains("event_cursor")) value.erase("events");
 				value["wait_timed_out"] = false;
 				return value;
 			}
 			if (std::chrono::steady_clock::now() >= deadline) {
 				auto value = snapshot(record, cursor, false);
-				value.erase("events");
+				if (!arguments.contains("event_cursor")) value.erase("events");
 				value["wait_timed_out"] = true;
 				return value;
 			}

@@ -68,6 +68,7 @@ public abstract class MixinIrisRenderingPipeline implements VibrisPipeline {
 
 	@Inject(method = "finalizeLevelRendering", at = @At("TAIL"), require = 1, expect = 1)
 	private void vibris$endFrame(CallbackInfo ci) {
+		vibris$passCapture.endFrame();
 		VibrisClient.captureManager().endFrame();
 	}
 

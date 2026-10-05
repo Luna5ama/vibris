@@ -28,7 +28,7 @@ import java.nio.channels.Channels
 import javax.imageio.ImageIO
 import kotlin.math.roundToInt
 
-data class GlCaptureMetadata(
+data class GlCaptureMetadata @JvmOverloads constructor(
     val width: Int,
     val height: Int,
     val depth: Int,
@@ -43,6 +43,9 @@ data class GlCaptureMetadata(
     val readbackFormat: String = "",
     val readbackType: String = "",
     val mipLevels: Int = 1,
+    val region: dev.vibris.api.CapturePlan.TextureRegion? = null,
+    val sourceWidth: Int = width,
+    val sourceHeight: Int = height,
 )
 
 object GlArtifactCapture {
@@ -62,13 +65,21 @@ object GlArtifactCapture {
     }
 
     @JvmStatic
-    fun readTexture(textureId: Int, mipLevel: Int): TextureReadback = withPackState {
-        val layout = textureLayout(textureId, mipLevel)
+    @JvmOverloads
+    fun readTexture(textureId: Int, mipLevel: Int, region: dev.vibris.api.CapturePlan.TextureRegion? = null): TextureReadback = withPackState {
+        val source = textureLayout(textureId, mipLevel)
+        region?.validate(source.metadata.width, source.metadata.height)
+        val layout = if (region == null) source else source.copy(metadata = source.metadata.copy(
+            width = region.width, height = region.height, region = region,
+            byteSize = Math.multiplyExact(Math.multiplyExact(region.width.toLong(), region.height.toLong()),
+                source.metadata.depth.toLong() * source.pixelBytes),
+        ))
         requireAllocation(layout.metadata.byteSize, "texture")
         val data = MemoryUtil.memAlloc(layout.metadata.byteSize.toInt()).order(ByteOrder.nativeOrder())
         try {
             GL42C.glMemoryBarrier(TEXTURE_READBACK_BARRIER_BITS)
-            GL45C.glGetTextureImage(textureId, mipLevel, layout.pixelFormat, layout.pixelType, data)
+            GL45C.glGetTextureSubImage(textureId, mipLevel, region?.x ?: 0, region?.y ?: 0, 0,
+                layout.metadata.width, layout.metadata.height, layout.metadata.depth, layout.pixelFormat, layout.pixelType, data)
             TextureReadback(layout, data)
         } catch (exception: Throwable) {
             MemoryUtil.memFree(data as Buffer)
@@ -109,6 +120,24 @@ object GlArtifactCapture {
         val metadata: GlCaptureMetadata get() = layout.metadata
 
         fun writeBin(output: OutputStream) = writeDirect(output, data)
+
+        fun values(layer: Int): DoubleArray {
+            require(layer in 0 until metadata.depth)
+            require(!layout.packedColor && layout.numericClass != NumericClass.DEPTH_STENCIL) {
+                "Statistics do not support packed depth/stencil or packed color readback"
+            }
+            val count = Math.multiplyExact(Math.multiplyExact(metadata.width, metadata.height), metadata.channelCount)
+            return DoubleArray(count) { index ->
+                val offset = (layer * count + index) * layout.componentBytes
+                when (layout.numericClass) {
+                    NumericClass.UNORM, NumericClass.UINT -> unsigned(offset).toDouble()
+                    NumericClass.SNORM, NumericClass.SINT -> signed(offset).toDouble()
+                    NumericClass.FLOAT, NumericClass.DEPTH -> floatValue(offset)
+                    NumericClass.STENCIL -> unsigned(offset).toDouble()
+                    NumericClass.DEPTH_STENCIL -> error("Unsupported packed readback")
+                }
+            }
+        }
 
         fun writePng(layer: Int, output: OutputStream) {
             require(layer in 0 until metadata.depth) { "Texture layer is out of range: $layer" }
@@ -453,7 +482,7 @@ object GlArtifactCapture {
         require(bytes in 0..MAX_CAPTURE_BYTES) { "$resource capture is too large: $bytes bytes" }
     }
 
-    private fun <T> withPackState(action: () -> T): T {
+    internal fun <T> withPackState(action: () -> T): T {
         val buffer = GL11C.glGetInteger(GL21C.GL_PIXEL_PACK_BUFFER_BINDING)
         val alignment = GL11C.glGetInteger(GL11C.GL_PACK_ALIGNMENT)
         val swapBytes = GL11C.glGetInteger(GL11C.GL_PACK_SWAP_BYTES)

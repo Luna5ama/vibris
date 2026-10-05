@@ -33,7 +33,7 @@ internal object CapturePlanBuilder {
                 val dump = action.dumpTexture
                 targets.add(
                     target(
-                        selector(dump.resource, ResourceCatalog.ResourceKind.TEXTURE),
+                        selector(dump.resource, ResourceCatalog.ResourceKind.TEXTURE, if (dump.hasRegion()) dump.region else null),
                         textureFormat(dump.format),
                         dump.artifactName,
                     ),
@@ -104,7 +104,7 @@ internal object CapturePlanBuilder {
                 val dump = action.dumpTextureAfterPass
                 passId = dump.passId
                 target = target(
-                    selector(dump.resource, ResourceCatalog.ResourceKind.TEXTURE),
+                    selector(dump.resource, ResourceCatalog.ResourceKind.TEXTURE, if (dump.hasRegion()) dump.region else null),
                     textureFormat(dump.format),
                     dump.artifactName,
                 )
@@ -124,7 +124,7 @@ internal object CapturePlanBuilder {
             )
         }
         val pass = catalog.passes.singleOrNull { it.passId == passId }
-            ?: throw missing("pass $passId")
+            ?: throw missing(passId, catalog.passes.map { it.passId })
         val plan = plan(listOf(target), catalog)
         val planned = plan.capture.targets.single()
         return try {
@@ -191,18 +191,34 @@ internal object CapturePlanBuilder {
                 val selector = target.resource
                 val resource = catalog.resources
                     .singleOrNull { it.kind == selector.kind && it.logicalName == selector.logicalName }
-                    ?: throw missing(selector.logicalName)
+                    ?: throw missing(selector.logicalName, catalog.resources.map { it.logicalName })
                 if (
                     selector.mipLevel >= maxOf(1, resource.mipLevels) ||
                     selector.layer >= maxOf(1, resource.layers) ||
                     (selector.kind == ResourceCatalog.ResourceKind.TEXTURE &&
                         selector.textureView !in resource.availableViews)
                 ) {
-                    throw missing(selector.logicalName)
+                    throw missing(selector.logicalName, catalog.resources.map { it.logicalName }).withDetails(
+                        mapOf("suggestions" to kotlinx.serialization.json.Json.encodeToString(
+                            kotlinx.serialization.builtins.ListSerializer(kotlinx.serialization.serializer<String>()),
+                            NameSuggestions.suggest(selector.logicalName, catalog.resources.map { it.logicalName })),
+                            "available_views" to resource.availableViews.joinToString(",") { it.name.lowercase(Locale.ROOT) }))
                 }
-                if (target.format == CapturePlan.ArtifactFormat.PNG) validatePng(resource)
+                val region = selector.region
+                val selected = if (region == null) resource else {
+                    val width = maxOf(1, resource.width shr selector.mipLevel)
+                    val height = maxOf(1, resource.height shr selector.mipLevel)
+                    try { region.validate(width, height) } catch (failure: IllegalArgumentException) {
+                        throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST, failure.message)
+                    }
+                    val pixelBytes = resource.byteSize / maxOf(1L, resource.width.toLong() * resource.height * maxOf(1, resource.depth))
+                    resource.copy(width = region.width, height = region.height,
+                        byteSize = Math.multiplyExact(region.width.toLong() * region.height,
+                            pixelBytes * maxOf(1, resource.depth)))
+                }
+                if (target.format == CapturePlan.ArtifactFormat.PNG) validatePng(selected)
                 for (output in target.outputs) {
-                    bytes = Math.addExact(bytes, estimate(output, resource))
+                    bytes = Math.addExact(bytes, estimate(output, selected))
                 }
             }
             return bytes
@@ -214,11 +230,12 @@ internal object CapturePlanBuilder {
         }
     }
 
-    private fun missing(name: String): RuntimeJobExecutor.Failure =
+    private fun missing(name: String, candidates: Collection<String> = emptyList()): RuntimeJobExecutor.Failure =
         RuntimeJobExecutor.Failure(
             ErrorCode.ERROR_CODE_RESOURCE_NOT_FOUND,
             "Capture resource was not found: $name",
-        )
+        ).withDetails(mapOf("suggestions" to kotlinx.serialization.json.JsonArray(
+            NameSuggestions.suggest(name, candidates).map { kotlinx.serialization.json.JsonPrimitive(it) }).toString()))
 
     private fun canonical(name: String): String = name.lowercase(Locale.ROOT)
 
@@ -353,6 +370,7 @@ internal object CapturePlanBuilder {
     private fun selector(
         selector: dev.vibris.protocol.v2.ResourceSelector,
         kind: ResourceCatalog.ResourceKind,
+        region: dev.vibris.protocol.v2.TextureRegion? = null,
     ): CapturePlan.ResourceSelector {
         val view = when (selector.view) {
             dev.vibris.protocol.v2.TextureView.TEXTURE_VIEW_CURRENT -> ResourceCatalog.TextureView.CURRENT
@@ -362,7 +380,8 @@ internal object CapturePlanBuilder {
             else -> null
         }
         return try {
-            CapturePlan.ResourceSelector(kind, selector.logicalName, view, selector.mipLevel, selector.layer)
+            CapturePlan.ResourceSelector(kind, selector.logicalName, view, selector.mipLevel, selector.layer,
+                region?.let { CapturePlan.TextureRegion(it.x, it.y, it.width, it.height) })
         } catch (failure: IllegalArgumentException) {
             throw RuntimeJobExecutor.Failure(
                 ErrorCode.ERROR_CODE_CAPTURE_FAILED,

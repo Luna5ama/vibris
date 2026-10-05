@@ -61,6 +61,17 @@ final class MinecraftVibrisCapture {
 		};
 	}
 
+	CompletionStage<dev.vibris.api.TextureAnalysisResult> analyzeTexture(
+		dev.vibris.api.TextureAnalysisRequest request, ArtifactSink sink, CancellationToken cancellation) {
+		IrisVibrisPassCapture pipeline = passCapture();
+		CapturePlan.Target target = new CapturePlan.Target(request.resource(), CapturePlan.ArtifactFormat.BIN,
+			"texture-analysis", java.util.List.of());
+		return pipeline.analyzeTexture(request, sink, cancellation, () -> {
+			int beauty = ((GpuTextureInterface) minecraft.getMainRenderTarget().getColorTexture()).iris$getGlId();
+			return resolve(target, beauty);
+		});
+	}
+
 	private static IrisVibrisPassCapture passCapture() {
 		if (Iris.getPipelineManager().getPipelineNullable() instanceof VibrisPipeline pipeline) {
 			return pipeline.vibris$getPassCapture();
