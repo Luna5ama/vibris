@@ -5,6 +5,9 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import dev.luna5ama.vibris.capture.CaptureActionExecutor;
 import dev.luna5ama.vibris.capture.VibrisPresetCatalog;
 import dev.vibris.api.CancellationToken;
+import dev.vibris.api.CameraMotionPlan;
+import dev.vibris.api.CameraMotionResult;
+import dev.vibris.api.CameraPose;
 import dev.vibris.api.ArtifactSink;
 import dev.vibris.api.CapturePlan;
 import dev.vibris.api.CaptureResourceNotFoundException;
@@ -28,6 +31,7 @@ import dev.vibris.api.TemporalResetResult;
 import dev.vibris.core.ArtifactManager;
 import dev.vibris.core.DeterministicTemporalCaptureScheduler;
 import dev.vibris.core.RenderedFrameClock;
+import dev.vibris.mod.mixin.minecraft.TimerAccess;
 import dev.vibris.core.ShaderConfigFile;
 import dev.vibris.core.VibrisRuntimeHost;
 import net.irisshaders.iris.BuildConfig;
@@ -49,6 +53,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
@@ -63,6 +68,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	private volatile SceneContext activeContext;
 	private volatile boolean closed;
 	private boolean deterministicSequence;
+	private CameraMotionController cameraMotion;
 	private DeterministicWorldSimulation.Scope deterministicSimulation;
 
 	public MinecraftVibrisRuntimeHost(Path gameDirectory) throws IOException {
@@ -80,8 +86,89 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		shaderConfigScratch = pendingRoot.resolveSibling("config").resolve("vibris.txt");
 	}
 
+	void beforeRenderedFrame(long frameId) {
+		if (cameraMotion != null) cameraMotion.beforeFrame(frameId, System.nanoTime());
+	}
+
 	void renderedFrameTail(long frameId) {
+		if (cameraMotion != null) cameraMotion.afterFrame(frameId, System.nanoTime());
 		contexts.renderedFrameTail(frameId);
+	}
+
+	@Override
+	public boolean supportsCameraMotion() { return true; }
+
+	@Override
+	public CompletionStage<CameraMotionResult> cameraMotion(CameraMotionPlan request, List<CapturePlan> plans,
+		ArtifactSink sink, RenderedFrameClock frames, CancellationToken cancellation) {
+		cancellation.throwIfCancellationRequested();
+		if (!deterministicSequence || cameraMotion != null || minecraft.player == null || minecraft.level == null ||
+			!minecraft.options.getCameraType().isFirstPerson()) {
+			throw new IllegalStateException("Camera motion requires an exclusive first-person world sequence");
+		}
+		if (plans.size() != request.frameCount()) throw new IllegalArgumentException("Camera frame plans are incomplete");
+		var player = minecraft.player;
+		var level = minecraft.level;
+		float yaw = player.getYRot(), pitch = player.getXRot();
+		float previousYaw = player.yRotO, previousPitch = player.xRotO;
+		int width = minecraft.getWindow().getWidth(), height = minecraft.getWindow().getHeight();
+		request.validateAnchor(yaw, pitch);
+		if (deterministicSimulation == null) deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
+		VibrisTime.Scope time = VibrisTime.begin(frames.currentFrame());
+		try {
+			TemporalResetResult reset = resetTemporal(cancellation);
+			if (!reset.successful()) throw new IllegalStateException("Camera temporal reset failed");
+		} catch (Throwable failure) { time.close(); throw failure; }
+		CameraMotionController session = new CameraMotionController(request, yaw, pitch, frames.currentFrame(),
+			System.nanoTime() + TimeUnit.SECONDS.toNanos(60), cancellation, new CameraMotionController.Driver() {
+			private void requirePlayer() {
+				if (minecraft.player != player || minecraft.level != level) {
+					throw new IllegalStateException("Camera world changed");
+				}
+				if (minecraft.getWindow().getWidth() != width || minecraft.getWindow().getHeight() != height) {
+					throw new IllegalStateException("Camera viewport changed");
+				}
+			}
+			@Override public void rotate(double y, double p) {
+				requirePlayer();
+				player.setYRot((float) y); player.setXRot((float) p);
+				player.yRotO = (float) y; player.xRotO = (float) p;
+			}
+			@Override public CameraPose actualPose() {
+				requirePlayer();
+				var camera = minecraft.gameRenderer.getMainCamera();
+				if (!camera.isInitialized() || camera.isDetached() || camera.entity() != player) {
+					throw new IllegalStateException("Camera motion requires the local first-person camera");
+				}
+				var position = camera.position();
+				return new CameraPose(position.x, position.y, position.z, camera.yRot(), camera.xRot());
+			}
+			@Override public float shaderTimeSeconds() {
+				return ((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$getFrameTimeCounter();
+			}
+			@Override public CaptureResult capture(int offset, long frameId) {
+				return MinecraftVibrisRuntimeHost.this.capture(plans.get(offset), sink, frameId, cancellation);
+			}
+			@Override public void restore() {
+				try {
+					if (minecraft.player != player || minecraft.level != level) {
+						throw new IllegalStateException("Camera world changed during restoration");
+					}
+					player.setYRot(yaw); player.setXRot(pitch); player.yRotO = previousYaw; player.xRotO = previousPitch;
+				} finally { time.close(); }
+			}
+			});
+		cameraMotion = session;
+		session.result().whenComplete((ignored, failure) -> { if (cameraMotion == session) cameraMotion = null; });
+		pollCameraMotion(session);
+		return session.result().minimalCompletionStage();
+	}
+
+	private void pollCameraMotion(CameraMotionController session) {
+		if (session.result().isDone()) return;
+		CompletableFuture.delayedExecutor(20, TimeUnit.MILLISECONDS).execute(() -> minecraft.execute(() -> {
+			if (!session.result().isDone()) { session.check(System.nanoTime()); pollCameraMotion(session); }
+		}));
 	}
 
 	@Override
@@ -215,6 +302,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	@Override
 	public void endDeterministicSequence(CancellationToken cancellation) {
 		cancellation.throwIfCancellationRequested();
+		if (cameraMotion != null) cameraMotion.close();
 		Throwable failure = deterministicSimulation == null ? null : closeCaptureScope(deterministicSimulation);
 		deterministicSimulation = null;
 		deterministicSequence = false;
@@ -988,6 +1076,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 
 	@Override
 	public void close() {
+		if (cameraMotion != null) cameraMotion.close();
 		closed = true;
 		presets.close();
 		contexts.close();

@@ -21,6 +21,18 @@ import dev.vibris.api.TemporalResetResult
 import java.util.concurrent.CompletionStage
 
 interface VibrisRuntimeHost : AutoCloseable {
+    fun supportsCameraMotion(): Boolean = false
+
+    fun cameraMotion(
+        request: dev.vibris.api.CameraMotionPlan,
+        plans: List<CapturePlan>,
+        sink: ArtifactSink,
+        frames: RenderedFrameClock,
+        cancellation: CancellationToken,
+    ): CompletionStage<dev.vibris.api.CameraMotionResult> = java.util.concurrent.CompletableFuture.failedFuture(
+        UnsupportedOperationException("Camera motion is unavailable"),
+    )
+
     fun isClientThread(): Boolean
 
     fun executeOnClient(task: Runnable)

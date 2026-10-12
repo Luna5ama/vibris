@@ -279,6 +279,17 @@ Json action_schema() {
         "applies the request-scoped scene, resets temporal counters, and returns the resulting shader state, errors, "
         "and structured reload diagnostics.";
     return one_of({
+        closed_object({{"type", enum_string({"camera_motion"})},
+            {"artifact_prefix", {{"type", "string"}, {"minLength", 1}, {"maxLength", 48},
+                {"pattern", "^[A-Za-z0-9][A-Za-z0-9._-]*$"}}},
+            {"warmup_frames", bounded_integer(0, 256)},
+            {"keyframes", {{"type", "array"}, {"minItems", 2}, {"maxItems", 16},
+                {"items", closed_object({
+                    {"frame_offset", bounded_integer(0, 239)},
+                    {"yaw_delta_degrees", {{"type", "number"}, {"minimum", -720}, {"maximum", 720}}},
+                    {"pitch_delta_degrees", {{"type", "number"}, {"minimum", -180}, {"maximum", 180}}},
+                }, {"frame_offset", "yaw_delta_degrees", "pitch_delta_degrees"})}}},
+        }, {"type", "artifact_prefix", "keyframes"}),
         closed_object({{"type", enum_string({"wait_frames"})},
                        {"frames", bounded_integer(1, std::numeric_limits<std::uint32_t>::max())}},
                       {"type", "frames"}),

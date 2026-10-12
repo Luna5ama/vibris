@@ -32,6 +32,7 @@ public abstract class MixinGameRendererVibris {
 		((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$setFrameTimeCounter(
 			Math.floorMod(Math.addExact(frame, 1L), 216000L) * VibrisTime.frameSeconds());
 		CapturedRenderingState.INSTANCE.setRealTickDelta(1.0F);
+		IrisVibrisLifecycle.beforeRenderedFrame();
 	}
 
 	@Inject(method = "render", at = @At(value = "INVOKE",

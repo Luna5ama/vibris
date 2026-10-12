@@ -992,6 +992,13 @@ std::optional<bool> SynchronousJobRunner::job_present(
 ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const Json& arguments,
     const proto::ServerHello& server, const proto::SceneContext& context,
     const SynchronousJobControl& control) {
+    if (const auto actions = arguments.find("actions"); actions != arguments.end() && actions->is_array() &&
+        std::any_of(actions->begin(), actions->end(), [](const Json& action) {
+            return action.value("type", std::string{}) == "camera_motion";
+        }) && std::find(server.capabilities().begin(), server.capabilities().end(),
+            proto::CAPABILITY_CAMERA_MOTION) == server.capabilities().end()) {
+        return ToolFailure{"UNSUPPORTED_ACTION", "The connected runtime does not support camera_motion.", false};
+    }
     const auto request_id = detail::generate_uuid();
     report_progress(control.progress, request_id, "loading", false);
     sources_.prepare(tool_name, arguments, server);

@@ -38,6 +38,7 @@ internal class ServerDescriptor @JvmOverloads constructor(
         .addCapabilities(Capability.CAPABILITY_STATUS_WAIT)
         .addCapabilities(Capability.CAPABILITY_TRANSACTIONAL_RESTORE)
         .addCapabilities(Capability.CAPABILITY_GRACEFUL_RESTART)
+        .apply { if (runtime.supportsCameraMotion()) addCapabilities(Capability.CAPABILITY_CAMERA_MOTION) }
         .setLimits(
             ServerLimits.newBuilder()
                 .setMaxSourceBytes(maxSourceBytes)

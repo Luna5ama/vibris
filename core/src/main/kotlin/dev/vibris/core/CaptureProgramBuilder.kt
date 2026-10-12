@@ -115,6 +115,16 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
                     steps.add(ActionStep.activate(actionIndex, uuid))
                     deferCatalogPlanning = true
                 }
+                action.hasCameraMotion() -> {
+                    flushAll()
+                    if (!job.submission.restoreState.onSuccess || !job.submission.restoreState.onError) {
+                        throw invalid("Camera motion requires restoration on success and error.")
+                    }
+                    val motion = try { CameraMotionProtocol.toApi(action.cameraMotion) }
+                    catch (failure: IllegalArgumentException) { throw invalid(failure.message ?: "Invalid camera motion.") }
+                    (0 until motion.frameCount()).forEach { requireUnique(artifactNames, motion.artifactName(it)) }
+                    steps.add(ActionStep.cameraMotion(actionIndex, action))
+                }
                 action.hasResetTemporalState() -> {
                     flushAll()
                     steps.add(ActionStep.reset(actionIndex))
@@ -207,6 +217,7 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
     enum class ActionType {
         LOAD,
         DETERMINISTIC,
+        CAMERA_MOTION,
         ACTIVATE,
         RESET,
         WAIT,
@@ -293,6 +304,10 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
                     ActionType.NSIGHT, null, 0, null, actionIndex,
                     action, null, emptyList(), emptyList(), null, emptyList(),
                 )
+            fun cameraMotion(actionIndex: Int, action: Action) = ActionStep(
+                ActionType.CAMERA_MOTION, null, 0, null, actionIndex,
+                action, null, emptyList(), emptyList(), null, emptyList(),
+            )
             fun runtime(actionIndex: Int, action: Action) =
                 ActionStep(
                     ActionType.RUNTIME, null, 0, null, actionIndex,

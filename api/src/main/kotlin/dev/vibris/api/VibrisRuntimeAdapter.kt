@@ -4,6 +4,17 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 
 interface VibrisRuntimeAdapter : AutoCloseable {
+    fun supportsCameraMotion(): Boolean = false
+
+    fun cameraMotion(
+        request: CameraMotionPlan,
+        plans: List<CapturePlan>,
+        sink: ArtifactSink,
+        cancellation: CancellationToken,
+    ): CompletionStage<CameraMotionResult> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("Camera motion is unavailable"),
+    )
+
     fun getRuntimeEnvironment(): CompletionStage<RuntimeEnvironment>
 
     fun listPresets(): CompletionStage<List<ScenePreset>> {

@@ -156,6 +156,16 @@ void append_action(const Json& input, const SourceMap& sources, const ConfigMap&
         action->mutable_reset_temporal_state();
     } else if (type == "wait_frames") {
         action->mutable_wait_frames()->set_frame_count(input.at("frames").get<std::uint32_t>());
+    } else if (type == "camera_motion") {
+        auto* value = action->mutable_camera_motion();
+        value->set_artifact_prefix(std::string(artifact_prefix) + input.at("artifact_prefix").get<std::string>());
+        value->set_warmup_frames(input.value("warmup_frames", std::uint32_t{128}));
+        for (const auto& key : input.at("keyframes")) {
+            auto* frame = value->add_keyframes();
+            frame->set_frame_offset(key.at("frame_offset").get<std::uint32_t>());
+            frame->set_yaw_delta_degrees(key.at("yaw_delta_degrees").get<double>());
+            frame->set_pitch_delta_degrees(key.at("pitch_delta_degrees").get<double>());
+        }
     } else if (type == "take_screenshot") {
         auto* value = action->mutable_take_screenshot();
         value->set_artifact_name(std::string(artifact_prefix) + input.value("artifact_name", "screenshot"));
@@ -503,6 +513,13 @@ std::uint64_t rendered_frames(const proto::ActionSequence& sequence) {
         else if (action.has_get_gpu_metrics()) result += action.get_gpu_metrics().frames();
         else if (action.has_accumulate_texture()) result += action.accumulate_texture().frames();
         else if (action.has_take_screenshot()) result += action.take_screenshot().after_frames();
+        else if (action.has_camera_motion()) {
+            const auto& motion = action.camera_motion();
+            if (!motion.keyframes().empty()) {
+                result += static_cast<std::uint64_t>(motion.warmup_frames()) +
+                    motion.keyframes(motion.keyframes_size() - 1).frame_offset() + 1;
+            }
+        }
     }
     return result;
 }
@@ -572,12 +589,17 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     job->mutable_context()->set_fov(config.fov);
     const auto restore = arguments.find("restore_state");
     const auto recipe = arguments.value("recipe", std::string{});
-    const bool forced_restore = tool_name == "vibris_run_recipe" &&
-        (recipe == "profile_matrix" || recipe == "benchmark_ab" || recipe == "compile_validate");
+    const auto motion_actions = arguments.find("actions");
+    const bool camera_motion = motion_actions != arguments.end() && motion_actions->is_array() &&
+        std::any_of(motion_actions->begin(), motion_actions->end(), [](const Json& action) {
+            return action.value("type", std::string{}) == "camera_motion";
+        });
+    const bool forced_restore = camera_motion || (tool_name == "vibris_run_recipe" &&
+        (recipe == "profile_matrix" || recipe == "benchmark_ab" || recipe == "compile_validate"));
     job->mutable_restore_state()->set_on_success(
         forced_restore || (restore != arguments.end() && restore->value("on_success", false)));
     job->mutable_restore_state()->set_on_error(
-        restore == arguments.end() || restore->value("on_error", true));
+        camera_motion || restore == arguments.end() || restore->value("on_error", true));
     configure_result_artifacts(arguments, *job->mutable_result_artifacts());
     for (const auto& source : sources) job->add_sources()->CopyFrom(source);
 

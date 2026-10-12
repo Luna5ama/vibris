@@ -43,6 +43,7 @@ internal class CaptureJobExecutor(
             captures.isEmpty() && !program.planningSession.hasDeferredCaptures &&
             !ProfileResultArtifacts.requested(job.submission) &&
             program.steps.none { it.type == CaptureProgramBuilder.ActionType.NSIGHT ||
+                it.type == CaptureProgramBuilder.ActionType.CAMERA_MOTION ||
                 it.runtimeAction?.hasAccumulateTexture() == true }
         ) {
             null

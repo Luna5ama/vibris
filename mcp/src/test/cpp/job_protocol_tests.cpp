@@ -506,10 +506,31 @@ void resume_registration_and_terminal_mapping_are_strict_v2() {
 		"strict-v2 terminal failure mapping lost request identity or retryability");
 }
 
+void camera_motion_is_typed_and_forces_transactional_restoration() {
+    const Json arguments{{"actions", Json::array({{
+        {"type", "camera_motion"}, {"artifact_prefix", "turn"},
+        {"keyframes", Json::array({
+            {{"frame_offset", 0}, {"yaw_delta_degrees", 0}, {"pitch_delta_degrees", 0}},
+            {{"frame_offset", 15}, {"yaw_delta_degrees", 90}, {"pitch_delta_degrees", -5}},
+        })},
+    }})}};
+    const auto request = JobProtocol::request("vibris_run_actions", arguments, config(), scene(),
+        std::vector{source()}, std::string(request_id));
+    const auto& job = request.submit_job().job();
+    require(job.action_sequence().actions(0).has_camera_motion(), "camera action was not typed");
+    const auto& motion = job.action_sequence().actions(0).camera_motion();
+    require(motion.warmup_frames() == 128 && motion.keyframes_size() == 2 &&
+        motion.keyframes(1).frame_offset() == 15 && motion.keyframes(1).yaw_delta_degrees() == 90,
+        "camera trajectory fields or default warmup changed");
+    require(job.restore_state().on_success() && job.restore_state().on_error(),
+        "camera motion did not force full restoration");
+}
+
 } // namespace
 
 int main() {
 	try {
+		camera_motion_is_typed_and_forces_transactional_restoration();
 		strict_v2_request_contains_typed_texture_and_buffer_actions();
 		ordinary_actions_preserve_the_final_runtime_state_by_default();
 		explicit_load_action_uses_declared_v2_ids();

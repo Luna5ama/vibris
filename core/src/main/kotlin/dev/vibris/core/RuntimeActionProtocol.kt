@@ -144,6 +144,7 @@ internal object RuntimeActionProtocol {
         Action.ActionCase.NSIGHT_GPU_TRACE -> ActionKind.ACTION_KIND_NSIGHT_GPU_TRACE
         Action.ActionCase.TEXTURE_STATS -> ActionKind.ACTION_KIND_TEXTURE_STATS
         Action.ActionCase.ACCUMULATE_TEXTURE -> ActionKind.ACTION_KIND_ACCUMULATE_TEXTURE
+        Action.ActionCase.CAMERA_MOTION -> ActionKind.ACTION_KIND_CAMERA_MOTION
         else -> throw IllegalArgumentException("Action kind is unsupported")
     }
 

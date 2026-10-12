@@ -366,3 +366,52 @@ delivery is explicitly requested. The delivery contains `vibris-mcp.exe` and an 
 Iris is a compile-time composite dependency, not the container for Vibris. The package command uses `-VibrisModJar`.
 Both scripts require schema-2 receipts/manifests and publish transactionally. Building
 or packaging does not authorize deployment, Minecraft restart, launcher restart, or user-data cleanup.
+
+## Bounded camera motion
+
+`vibris_run_actions` accepts `camera_motion` on runtimes advertising `CAPABILITY_CAMERA_MOTION`.
+The protocol extension is additive; the protocol version stays 3.1. A new client rejects this action on older runtimes
+before preparing sources or submitting the Core job. Existing actions retain their behavior.
+
+The action controls first-person yaw/pitch only. Angles are degree offsets from the starting player rotation, using
+Minecraft's conventions. Yaw follows the explicit continuous offset; no shortest-arc wrap is introduced. Recorded
+actual yaw is normalized to [-180, 180). Every requested absolute pitch must remain within [-90, 90]. No translation,
+physics, world edits, input-lock changes, or arbitrary scripts are supported.
+
+There must be 2-16 keyframes with strictly increasing frame offsets, starting at offset zero with zero yaw/pitch
+deltas. The final offset is at most 239; yaw deltas are finite and bounded to +/-720 degrees, pitch deltas to +/-180.
+`warmup_frames` defaults to 128 in the MCP client and is bounded to 0-256. `artifact_prefix` is a safe flat name of at
+most 48 characters. The trajectory uses piecewise linear interpolation and one fixed 1/60-second shader-time step per
+rendered frame. Wall-clock capture cadence is measured separately and may be slower because each frame is read back.
+
+Example action after `load_shader`:
+
+```json
+{
+  "type": "camera_motion",
+  "artifact_prefix": "turn-fixed",
+  "warmup_frames": 128,
+  "keyframes": [
+    {"frame_offset": 0, "yaw_delta_degrees": 0, "pitch_delta_degrees": 0},
+    {"frame_offset": 30, "yaw_delta_degrees": 0, "pitch_delta_degrees": 0},
+    {"frame_offset": 45, "yaw_delta_degrees": 90, "pitch_delta_degrees": 0},
+    {"frame_offset": 90, "yaw_delta_degrees": 90, "pitch_delta_degrees": 0},
+    {"frame_offset": 105, "yaw_delta_degrees": 0, "pitch_delta_degrees": 0},
+    {"frame_offset": 135, "yaw_delta_degrees": 0, "pitch_delta_degrees": 0}
+  ]
+}
+```
+
+Artifact capacity is reserved for every trajectory PNG before the camera starts moving. Each trajectory frame records
+its offset, global rendered frame ID, planned angles, actual camera eye position and angles, measured shader time,
+renderer-head/tail monotonic timestamps, and the PNG capture receipt carrying the same frame ID. Shader time is read
+from its runtime provider; it is not a GPU timestamp. These timestamps are
+CPU renderer timestamps, not GPU timings. Missing/duplicate frames, changing viewport/world, invalid actual pose,
+misaligned shader clocks, cancellation, timeout, or readback errors fail the action rather than publishing a sparse
+sequence as complete. Use the full result file when the compact MCP projection omits detailed per-frame records.
+
+Camera motion forces both success and error restoration; explicitly disabling either in MCP arguments is rejected.
+Raw protocol callers must enable both restore flags. A verified Core source/settings/scene baseline is required.
+The camera is restored and the deterministic clock scope is released locally before the motion future completes;
+the enclosing job then performs normal source/config/scene restoration and temporal reset. The existing window-position
+preservation remains active. No game restart is implicit in this action.

@@ -499,10 +499,41 @@ void branch_errors_and_prune_are_precise() {
     require(deletes == 1 && preview.at("selected_bytes") == 30, "dry run deleted or miscounted bytes");
 }
 
+void bounded_camera_motion_schema_and_restore_policy() {
+    const ToolRegistry registry;
+    Json arguments{{"worktree_root", "C:/fixture"}, {"preset_id", "quality"},
+        {"actions", Json::array({{
+            {"type", "camera_motion"}, {"artifact_prefix", "turn"},
+            {"keyframes", Json::array({
+                {{"frame_offset", 0}, {"yaw_delta_degrees", 0}, {"pitch_delta_degrees", 0}},
+                {{"frame_offset", 15}, {"yaw_delta_degrees", 90}, {"pitch_delta_degrees", 0}},
+            })},
+        }})}};
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_actions", arguments)),
+        "valid camera motion was rejected");
+    auto invalid = arguments;
+    invalid["actions"][0]["keyframes"][1]["frame_offset"] = 240;
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
+        "oversized camera motion was accepted");
+    invalid = arguments;
+    invalid["actions"][0]["keyframes"][1]["frame_offset"] = 0;
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
+        "duplicate frame offsets were accepted");
+    invalid = arguments;
+    invalid["restore_state"] = {{"on_success", false}, {"on_error", true}};
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
+        "camera action accepted disabled success restoration");
+    invalid = arguments;
+    invalid["actions"][0]["keyframes"][0]["yaw_delta_degrees"] = 10;
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
+        "camera action accepted an initial instantaneous jump");
+}
+
 } // namespace
 
 int main() {
     try {
+        bounded_camera_motion_schema_and_restore_policy();
         exact_v2_tool_catalog();
         exact_filters_and_job_control();
         typed_actions_reject_aliases();

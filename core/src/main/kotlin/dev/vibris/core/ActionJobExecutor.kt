@@ -39,6 +39,8 @@ internal class ActionJobExecutor(
         var activeIndices: List<Int> = emptyList()
         try {
             val diagnostics = ArrayList<ReloadResult.Diagnostic>()
+            val motions = ArrayList<Pair<Int, Triple<dev.vibris.api.CameraMotionPlan,
+                dev.vibris.api.CameraMotionResult, List<CapturePlan>>>>()
             val action = captures.prepareActions(job, runtime.getResourceCatalog(), diagnostics)
             val prepared = action.prepared
             val captured = ArrayList<CaptureResult>()
@@ -339,6 +341,25 @@ internal class ActionJobExecutor(
                                     .build(),
                             )
                         }
+                        CaptureProgramBuilder.ActionType.CAMERA_MOTION -> {
+                            if (prepared == null) throw captureUnavailable()
+                            if (!runtime.supportsCameraMotion()) {
+                                throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST, "Runtime does not support camera motion.")
+                            }
+                            val request = CameraMotionProtocol.toApi(step.runtimeAction!!.cameraMotion)
+                            val planned = CameraMotionProtocol.plans(request, runtime.getResourceCatalog())
+                            planned.forEach { prepared.addPlan(it.capture, it.estimatedBytes) }
+                            val plans = planned.map { it.capture }
+                            val motion = owner.await(runtime.cameraMotion(request, plans, prepared.transaction,
+                                job.cancellation.token()), job, deadline)
+                            completedCapturePlans.addAll(plans)
+                            captured.addAll(motion.captures)
+                            receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                .setCameraMotion(CameraMotionProtocol.receipt(request, motion, plans,
+                                    JobResult.getDefaultInstance(), captures)).build())
+                            pendingCaptureIndices.add(step.actionIndex)
+                            motions.add(step.actionIndex to Triple(request, motion, plans))
+                        }
                         CaptureProgramBuilder.ActionType.RESET -> {
                             owner.reset(job, progress, deadline)
                             receiptBook.put(
@@ -493,7 +514,8 @@ internal class ActionJobExecutor(
 
             fun executeSequencedSteps() {
                 val deterministic = action.program.steps.any {
-                    it.type == CaptureProgramBuilder.ActionType.DETERMINISTIC
+                    it.type == CaptureProgramBuilder.ActionType.DETERMINISTIC ||
+                        it.type == CaptureProgramBuilder.ActionType.CAMERA_MOTION
                 }
                 if (!deterministic) {
                     executeSteps()
@@ -543,6 +565,11 @@ internal class ActionJobExecutor(
                         execution.receipt.request.target.artifactName to execution.receipt.physicalName
                     },
                 )
+                motions.forEach { (index, motion) ->
+                    receiptBook.replace(index, receiptBook.success(index).setCameraMotion(
+                        CameraMotionProtocol.receipt(motion.first, motion.second, motion.third, committed, captures)
+                    ).build())
+                }
                 captureExecutions.forEach { execution ->
                     execution.actions.forEach { capture ->
                         receiptBook.replace(

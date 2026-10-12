@@ -74,6 +74,11 @@ public final class IrisVibrisLifecycle {
 		}
 	}
 
+	public static void beforeRenderedFrame() {
+		MinecraftVibrisRuntimeHost current = host;
+		if (current != null) current.beforeRenderedFrame(Math.incrementExact(currentFrame()));
+	}
+
 	public static void renderedFrame() {
 		RenderedFrameClock current = frames;
 		if (current != null) {

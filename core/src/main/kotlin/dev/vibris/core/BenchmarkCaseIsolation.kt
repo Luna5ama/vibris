@@ -76,7 +76,7 @@ internal class BenchmarkCaseIsolation private constructor(
                 else -> false
             }
             val changesSourceSettingsOrScene = forced || job.submission.actionSequence.actionsList.any { action ->
-                action.hasActivateSource() || action.hasLoadShader()
+                action.hasActivateSource() || action.hasLoadShader() || action.hasCameraMotion()
             }
             val mutates = changesSourceSettingsOrScene || job.submission.actionSequence.actionsList.any { action ->
                 action.hasResetTemporalState()

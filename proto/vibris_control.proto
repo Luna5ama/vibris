@@ -35,6 +35,7 @@ enum Capability {
     CAPABILITY_MANAGED_ARTIFACTS = 9;
     CAPABILITY_PASS_BOUNDARY_CAPTURE = 10;
     CAPABILITY_GRACEFUL_RESTART = 11;
+    CAPABILITY_CAMERA_MOTION = 12;
 }
 
 message ClientMessage {
@@ -563,6 +564,7 @@ message Action {
         NsightGpuTrace nsight_gpu_trace = 18;
         TextureStats texture_stats = 19;
         AccumulateTexture accumulate_texture = 20;
+        CameraMotion camera_motion = 21;
     }
     reserved 5, 7, 8;
     reserved "compare_captures", "capture_pass", "capture_multi";
@@ -590,8 +592,46 @@ enum ActionKind {
     ACTION_KIND_NSIGHT_GPU_TRACE = 18;
     ACTION_KIND_TEXTURE_STATS = 19;
     ACTION_KIND_ACCUMULATE_TEXTURE = 20;
+    ACTION_KIND_CAMERA_MOTION = 21;
     reserved 7, 8;
     reserved "ACTION_KIND_CAPTURE_PASS", "ACTION_KIND_CAPTURE_MULTI";
+}
+
+message CameraKeyframe {
+    uint32 frame_offset = 1;
+    double yaw_delta_degrees = 2;
+    double pitch_delta_degrees = 3;
+}
+
+message CameraMotion {
+    repeated CameraKeyframe keyframes = 1;
+    uint32 warmup_frames = 2;
+    string artifact_prefix = 3;
+}
+
+message CameraPose {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    double yaw_degrees = 4;
+    double pitch_degrees = 5;
+}
+
+message CameraMotionFrame {
+    uint32 frame_offset = 1;
+    uint64 rendered_frame_id = 2;
+    int64 render_started_nanos = 3;
+    int64 render_ended_nanos = 4;
+    float shader_time_seconds = 5;
+    double planned_yaw_degrees = 6;
+    double planned_pitch_degrees = 7;
+    CameraPose actual_pose = 8;
+    CaptureReceipt capture = 9;
+}
+
+message CameraMotionReceipt {
+    uint32 warmup_frames = 1;
+    repeated CameraMotionFrame frames = 2;
 }
 
 message ResetTemporalState {}
@@ -918,6 +958,7 @@ message ActionReceipt {
         NsightGpuTraceReceipt nsight_gpu_trace = 21;
         TextureStatsReceipt texture_stats = 22;
         AccumulationReceipt accumulation = 23;
+        CameraMotionReceipt camera_motion = 24;
     }
 }
 

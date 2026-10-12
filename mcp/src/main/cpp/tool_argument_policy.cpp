@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <unordered_set>
@@ -129,6 +131,32 @@ std::optional<InvocationError> validate_argument_policy(std::string_view tool_na
         for (std::size_t index = 0; index < actions->size(); ++index) {
             if (!(*actions)[index].is_object()) continue;
             const auto type = (*actions)[index].value("type", std::string{});
+            if (type == "camera_motion") {
+                const auto restore = arguments.find("restore_state");
+                if (restore != arguments.end() &&
+                    (!restore->value("on_success", true) || !restore->value("on_error", true))) {
+                    return InvocationError{InvocationErrorCode::InvalidArguments,
+                        "camera_motion requires restoration on success and error"};
+                }
+                const auto& keys = (*actions)[index].at("keyframes");
+                if (keys.size() < 2 || keys.size() > 16 || keys.front().at("frame_offset") != 0 ||
+                    keys.front().at("yaw_delta_degrees") != 0 || keys.front().at("pitch_delta_degrees") != 0) {
+                    return InvocationError{InvocationErrorCode::InvalidArguments,
+                        "camera_motion requires 2-16 keyframes starting at frame zero with zero deltas"};
+                }
+                std::int64_t previous = -1;
+                for (const auto& key : keys) {
+                    const auto offset = key.at("frame_offset").get<std::int64_t>();
+                    const auto yaw = key.at("yaw_delta_degrees").get<double>();
+                    const auto pitch = key.at("pitch_delta_degrees").get<double>();
+                    if (offset <= previous || offset > 239 || !std::isfinite(yaw) || std::abs(yaw) > 720 ||
+                        !std::isfinite(pitch) || std::abs(pitch) > 180) {
+                        return InvocationError{InvocationErrorCode::InvalidArguments,
+                            "camera_motion keyframes must be ordered, finite and bounded"};
+                    }
+                    previous = offset;
+                }
+            }
             if (type == "load_shader") {
                 if (tool_name == "vibris_run_matrix") {
                     return InvocationError{InvocationErrorCode::InvalidArguments,

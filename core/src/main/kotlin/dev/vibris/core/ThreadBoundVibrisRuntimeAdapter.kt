@@ -44,6 +44,21 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
 
     fun isIdle(): Boolean = pendingOperations.get() == 0
 
+    override fun supportsCameraMotion(): Boolean = host.supportsCameraMotion()
+
+    override fun cameraMotion(
+        request: dev.vibris.api.CameraMotionPlan,
+        plans: List<CapturePlan>,
+        sink: ArtifactSink,
+        cancellation: CancellationToken,
+    ): CompletionStage<dev.vibris.api.CameraMotionResult> = trackActivity {
+        onClientStage(Supplier { host.cameraMotion(request, plans, sink, frames, cancellation) }, cancellation)
+            .thenCompose { result -> onClient(Supplier {
+                catalog = host.resourceCatalog(frames.currentFrame())
+                result
+            }, cancellation) }
+    }
+
     override fun getRuntimeEnvironment(): CompletionStage<RuntimeEnvironment> =
         trackActivity { onClient(Supplier(host::runtimeEnvironment), CancellationToken.none()) }
 
