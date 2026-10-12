@@ -3,8 +3,6 @@ package dev.vibris.mod.mixin.minecraft;
 import dev.vibris.mod.IrisVibrisLifecycle;
 import dev.vibris.mod.VibrisClient;
 import dev.vibris.mod.VibrisTime;
-import net.irisshaders.iris.uniforms.CapturedRenderingState;
-import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
@@ -26,12 +24,6 @@ public abstract class MixinGameRendererVibris {
 	private void vibris$deterministicFrame(DeltaTracker deltaTracker, boolean tick, CallbackInfo ci) {
 		VibrisClient.flameGraph().beginFrame();
 		if (!VibrisTime.active()) return;
-		long frame = VibrisTime.deterministicFrame(IrisVibrisLifecycle.currentFrame());
-		((FrameCounterAccess) SystemTimeUniforms.COUNTER).vibris$setCount((int) Math.floorMod(frame, 720720L));
-		((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$setLastFrameTime(VibrisTime.frameSeconds());
-		((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$setFrameTimeCounter(
-			Math.floorMod(Math.addExact(frame, 1L), 216000L) * VibrisTime.frameSeconds());
-		CapturedRenderingState.INSTANCE.setRealTickDelta(1.0F);
 		IrisVibrisLifecycle.beforeRenderedFrame();
 	}
 

@@ -97,7 +97,8 @@ final class CameraMotionController implements AutoCloseable {
                 float shaderTime = driver.shaderTimeSeconds();
                 float expectedTime = (elapsedFrames + 1L) * (1.0F / 60.0F);
                 if (!Float.isFinite(shaderTime) || Math.abs(shaderTime - expectedTime) > 0.00001F) {
-                    throw new IllegalStateException("Camera shader clock alignment was lost");
+                    throw new IllegalStateException("Camera shader clock alignment was lost: actual=" + shaderTime +
+                        ", expected=" + expectedTime + ", frame=" + frameId);
                 }
                 CaptureResult captured = driver.capture(offset, frameId);
                 if (captured.frameId() != frameId) throw new IllegalStateException("Camera capture frame mismatch");

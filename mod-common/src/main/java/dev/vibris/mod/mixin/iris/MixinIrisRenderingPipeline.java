@@ -1,6 +1,11 @@
 package dev.vibris.mod.mixin.iris;
 
 import dev.vibris.mod.IrisVibrisPassCapture;
+import dev.vibris.mod.IrisVibrisLifecycle;
+import dev.vibris.mod.VibrisTime;
+import dev.vibris.mod.mixin.minecraft.FrameCounterAccess;
+import dev.vibris.mod.mixin.minecraft.TimerAccess;
+import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import dev.vibris.mod.GlImageAccess;
 import dev.vibris.mod.RenderTargetsAccess;
 import dev.vibris.mod.ShaderStorageBufferHolderAccess;
@@ -63,6 +68,15 @@ public abstract class MixinIrisRenderingPipeline implements VibrisPipeline {
 
 	@Inject(method = "beginLevelRendering", at = @At("HEAD"), require = 1, expect = 1)
 	private void vibris$beginFrame(CallbackInfo ci) {
+		// Set the provider immediately before world passes, after renderer-head clock updates.
+		if (VibrisTime.active()) {
+			long frame = VibrisTime.deterministicFrame(IrisVibrisLifecycle.currentFrame());
+			((FrameCounterAccess) SystemTimeUniforms.COUNTER).vibris$setCount((int) Math.floorMod(frame, 720720L));
+			((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$setLastFrameTime(VibrisTime.frameSeconds());
+			((TimerAccess) (Object) SystemTimeUniforms.TIMER).vibris$setFrameTimeCounter(
+				Math.floorMod(Math.addExact(frame, 1L), 216000L) * VibrisTime.frameSeconds());
+			CapturedRenderingState.INSTANCE.setRealTickDelta(1.0F);
+		}
 		VibrisClient.captureManager().startFrame();
 	}
 

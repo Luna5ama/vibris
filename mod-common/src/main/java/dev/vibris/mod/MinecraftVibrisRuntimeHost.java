@@ -159,7 +159,10 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 			}
 			});
 		cameraMotion = session;
-		session.result().whenComplete((ignored, failure) -> { if (cameraMotion == session) cameraMotion = null; });
+		session.result().whenComplete((ignored, failure) -> {
+            if (cameraMotion == session) cameraMotion = null;
+            if (failure != null) VibrisClient.LOGGER.warn("Vibris camera motion terminated with an error", failure);
+        });
 		pollCameraMotion(session);
 		return session.result().minimalCompletionStage();
 	}
