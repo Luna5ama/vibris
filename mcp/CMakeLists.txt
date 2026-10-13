@@ -436,7 +436,8 @@ if(BUILD_TESTING)
             TypedGuardrailRegression
             PairedDirectionReversal
             PairedTemporalDrift
-            PairedCompileGate)
+            PairedCompileGate
+            PairedMetricAliases)
         add_test(NAME ${scenario} COMMAND vibris-paired-benchmark-tests ${scenario})
     endforeach()
 

@@ -4,6 +4,9 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -548,8 +551,78 @@ void compile_catalog_is_a_mandatory_gate() {
         "A missing compile catalog receipt did not fail the mandatory benchmark gate.");
 }
 
+void single_program_pass_aliases_are_verified_and_ambiguities_fail_closed() {
+    for (int mode = 0; mode < 7; ++mode) {
+        const auto outcome = vibris::mcp::run_paired_benchmark(arguments(), workflow_id, 19,
+            [mode](const Json& request) -> ToolOutcome {
+                auto profile = profile_result(request, stable_value(request));
+                auto& timings = profile["cases"][0]["metrics"]["metrics"];
+                auto program = timings[1];
+                program["main_source"] = "/test/begin3_a.comp.glsl";
+                timings[1] = program;
+                auto alias = program;
+                alias["program_id"] = ""; alias["main_source"] = "";
+                if (mode == 1) alias["samples_ns"][0] = alias["samples_ns"][0].get<double>() + 1;
+                if (mode == 2) alias.erase("samples_ns");
+                if (mode == 3) { auto second=program;second["program_id"]="begin3_b";timings.push_back(second); }
+                if (mode == 4) timings.push_back(program);
+                if (mode == 5 || mode == 6) {
+                    const double invalid=mode == 5 ? -1.0 : std::numeric_limits<double>::infinity();
+                    timings[1]["samples_ns"][0]=invalid;alias["samples_ns"][0]=invalid;
+                }
+                timings.push_back(alias);
+                return profile;
+            }, [](const Json&) -> ToolOutcome { return visual_result(true); });
+        const auto& result = std::get<Json>(outcome);
+        if (mode == 0) {
+            require(result.at("guards").at("passed") == true, "identical single-program pass alias rejected");
+            require(result.at("guards").at("program_identity_count") == 2, "pass alias counted as another program");
+        } else {
+            require(result.at("guards").at("passed") == false && result.at("verdict") == "GATE_FAILED",
+                "conflicting/missing/multi-program/repeated timing identity accepted");
+        }
+    }
+}
+
+// CPU-only entry point: callbacks return existing immutable receipts. No runtime, MCP or GPU call is made.
+int reanalyze_saved_receipts(const char* request_path, const char* receipts_path, const char* output_path) {
+    std::ifstream request_file(request_path); if(!request_file) throw std::runtime_error("missing request");
+    Json saved_request = Json::parse(request_file);
+    const auto request_arguments = saved_request.at("params").at("arguments");
+    std::size_t index=0;
+    const auto read_receipt = [&](std::size_t n) {
+        const auto number=std::to_string(n);
+        const auto name=std::string(8-number.size(),'0')+number+".json";
+        std::ifstream file(std::filesystem::path(receipts_path)/name);
+        if(!file) throw std::runtime_error("missing saved receipt");
+        const auto receipt=Json::parse(file);
+        require(receipt.at("success")==true,"saved receipt failed");
+        return receipt.at("result");
+    };
+    const auto outcome=vibris::mcp::run_paired_benchmark(request_arguments,"offline-saved-evidence",128,
+        [&](const Json& requested) -> ToolOutcome {
+            auto profile=read_receipt(index++);
+            require(profile.at("cases").size()==1,"saved profile is not one case");
+            const auto& c=profile.at("cases")[0];
+            require(c.at("case_id")==requested.at("__vibris_case_id"),"saved case ordering mismatch");
+            require(c.at("source_id")==requested.at("__vibris_source_id"),"saved source role mismatch");
+            const auto role=requested.at("__vibris_source_id").get<std::string>();
+            const auto& source=request_arguments.at(role);
+            if(source.at("kind")=="commit") {
+                require(profile.at("provenance").at("requested_revision")==source.at("revision"),
+                    "saved source revision mismatch");
+            }
+            return profile;
+        }, [&](const Json&) -> ToolOutcome { return read_receipt(index++); });
+    require(std::holds_alternative<Json>(outcome),"offline benchmark analysis failed");
+    std::ofstream output(output_path); if(!output) throw std::runtime_error("cannot write analysis");
+    output<<std::get<Json>(outcome).dump(2)<<'\n';
+    std::cout<<"OFFLINE_REANALYSIS_RECEIPTS="<<index<<'\n';
+    return 0;
+}
+
 using TestCase = std::pair<std::string_view, void (*)()>;
-constexpr std::array<TestCase, 10> test_cases{{
+constexpr std::array<TestCase, 11> test_cases{{
     {"PairedOrderStrategies", order_strategies_are_balanced_and_reproducible},
     {"PairedAggregation", paired_aggregation_reports_effect_noise_and_confidence},
     {"MeasuredNoiseFloorRejection", measured_noise_floor_rejects_small_effects},
@@ -560,12 +633,15 @@ constexpr std::array<TestCase, 10> test_cases{{
     {"PairedDirectionReversal", direction_reversal_is_inconclusive},
     {"PairedTemporalDrift", thermal_or_temporal_drift_is_inconclusive},
     {"PairedCompileGate", compile_catalog_is_a_mandatory_gate},
+    {"PairedMetricAliases", single_program_pass_aliases_are_verified_and_ambiguities_fail_closed},
 }};
 
 } // namespace
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 5 && std::string_view(argv[1]) == "--reanalyze")
+            return reanalyze_saved_receipts(argv[2],argv[3],argv[4]);
         if (argc == 2) {
             const auto found = std::ranges::find_if(test_cases, [&](const auto& value) {
                 return value.first == argv[1];

@@ -237,13 +237,42 @@ std::string text_at(const Json& value, std::initializer_list<const char*> path) 
     return current->is_string() ? current->get<std::string>() : std::string{};
 }
 
+// A one-program pass publishes both a pass timing and a program timing with the same metric_id.
+// Drop the pass alias only within this exact measurement, with a unique child and identical raw data.
+bool identical_single_program_alias(const Json& timing, const Json& values) {
+    if (!timing.value("program_id", std::string{}).empty() ||
+        timing.value("pass_id", std::string{}).empty()) return false;
+    const Json* child = nullptr;
+    for (const auto& candidate : values) {
+        if (!candidate.is_object() || candidate.value("program_id", std::string{}).empty() ||
+            candidate.value("pass_id", std::string{}) != timing.value("pass_id", std::string{}) ||
+            candidate.value("metric_id", std::string{}) != timing.value("metric_id", std::string{})) continue;
+        if (child != nullptr) return false;
+        child = &candidate;
+    }
+    if (child == nullptr) return false;
+    const auto samples = timing.find("samples_ns");
+    const auto child_samples = child->find("samples_ns");
+    if (samples == timing.end() || child_samples == child->end() || !samples->is_array() || samples->empty() ||
+        *samples != *child_samples) return false;
+    if (!std::ranges::all_of(*samples, [](const Json& value) {
+        return value.is_number() && std::isfinite(value.get<double>()) && value.get<double>() >= 0.0;
+    })) return false;
+    for (const auto field : {"average_ns", "p50_ns", "p95_ns"}) {
+        const auto a = timing.find(field), b = child->find(field);
+        if (a == timing.end() || b == child->end() || !a->is_number() || !b->is_number() ||
+            !std::isfinite(a->get<double>()) || *a != *b) return false;
+    }
+    return true;
+}
+
 std::map<std::string, MetricValue> metric_values(const Json& profile_case) {
     std::map<std::string, MetricValue> result;
     const auto metrics = profile_case.find("metrics");
     if (metrics == profile_case.end() || !metrics->is_object()) return result;
     const auto values = metrics->value("metrics", Json::array());
     for (const auto& timing : values) {
-        if (!timing.is_object()) continue;
+        if (!timing.is_object() || identical_single_program_alias(timing, values)) continue;
         const auto p50 = timing.find("p50_ns");
         const auto p95 = timing.find("p95_ns");
         if (p50 == timing.end() || !p50->is_number() || p95 == timing.end() || !p95->is_number()) continue;
@@ -255,7 +284,13 @@ std::map<std::string, MetricValue> metric_values(const Json& profile_case) {
             identity["program"] = program;
             identity["framework_pass"] = pass;
         }
-        const auto key = identity.dump();
+        if (!program.empty() && !timing.value("main_source", std::string{}).empty()) {
+            identity["main_source"] = timing.at("main_source");
+        }
+        auto key = identity.dump();
+        // Never silently discard a repeated explicit identity, even when summary values coincide.
+        std::size_t duplicate = 0;
+        while (result.contains(key)) { identity["duplicate_row"] = ++duplicate; key = identity.dump(); }
         result.emplace(key, MetricValue{std::move(identity), p50->get<double>(), p95->get<double>()});
     }
     return result;
