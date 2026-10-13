@@ -16,6 +16,7 @@ import java.util.concurrent.CompletableFuture;
 final class CameraMotionController implements AutoCloseable {
     interface Driver {
         void rotate(double yaw, double pitch);
+        default void translate(double xDelta, double yDelta, double zDelta) {}
         CameraPose actualPose();
         float shaderTimeSeconds();
         CaptureResult capture(int offset, long frameId) throws Exception;
@@ -26,6 +27,8 @@ final class CameraMotionController implements AutoCloseable {
     private final double anchorYaw;
     private final double anchorPitch;
     private final Driver driver;
+    private final CameraPose anchorPose;
+    private CameraPose plannedPose;
     private final CancellationToken cancellation;
     private final long deadline;
     private final CompletableFuture<CameraMotionResult> result = new CompletableFuture<>();
@@ -49,6 +52,7 @@ final class CameraMotionController implements AutoCloseable {
         this.deadline = deadline;
         this.cancellation = cancellation;
         this.driver = driver;
+        this.anchorPose = driver.actualPose();
     }
 
     CompletableFuture<CameraMotionResult> result() { return result; }
@@ -71,6 +75,10 @@ final class CameraMotionController implements AutoCloseable {
             }
             int offset = Math.max(0, elapsedFrames - plan.warmupFrames());
             rotation = plan.rotationAt(offset, anchorYaw, anchorPitch);
+            var delta = plan.positionDeltaAt(offset);
+            plannedPose = new CameraPose(anchorPose.x()+delta.x(), anchorPose.y()+delta.y(), anchorPose.z()+delta.z(),
+                rotation.yawDegrees(), rotation.pitchDegrees());
+            driver.translate(delta.x(), delta.y(), delta.z());
             driver.rotate(rotation.yawDegrees(), rotation.pitchDegrees());
             pendingFrame = frameId;
             startedNanos = now;
@@ -94,6 +102,10 @@ final class CameraMotionController implements AutoCloseable {
                     Math.abs(actual.pitchDegrees() - rotation.pitchDegrees()) > 0.001) {
                     throw new IllegalStateException("Rendered camera did not follow the requested rotation");
                 }
+                if (Math.abs(actual.x()-plannedPose.x()) > 0.0001 || Math.abs(actual.y()-plannedPose.y()) > 0.0001 ||
+                    Math.abs(actual.z()-plannedPose.z()) > 0.0001) {
+                    throw new IllegalStateException("Rendered camera did not follow the requested position");
+                }
                 float shaderTime = driver.shaderTimeSeconds();
                 float expectedTime = (elapsedFrames + 1L) * (1.0F / 60.0F);
                 if (!Float.isFinite(shaderTime) || Math.abs(shaderTime - expectedTime) > 0.00001F) {
@@ -103,7 +115,7 @@ final class CameraMotionController implements AutoCloseable {
                 CaptureResult captured = driver.capture(offset, frameId);
                 if (captured.frameId() != frameId) throw new IllegalStateException("Camera capture frame mismatch");
                 samples.add(new CameraMotionSample(offset, frameId, startedNanos, now,
-                    shaderTime, rotation, actual));
+                    shaderTime, rotation, actual, plannedPose));
                 captures.add(captured);
             }
             pendingFrame = -1;

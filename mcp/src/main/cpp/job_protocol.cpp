@@ -165,6 +165,9 @@ void append_action(const Json& input, const SourceMap& sources, const ConfigMap&
             frame->set_frame_offset(key.at("frame_offset").get<std::uint32_t>());
             frame->set_yaw_delta_degrees(key.at("yaw_delta_degrees").get<double>());
             frame->set_pitch_delta_degrees(key.at("pitch_delta_degrees").get<double>());
+            frame->set_x_delta(key.value("x_delta", 0.0));
+            frame->set_y_delta(key.value("y_delta", 0.0));
+            frame->set_z_delta(key.value("z_delta", 0.0));
         }
     } else if (type == "take_screenshot") {
         auto* value = action->mutable_take_screenshot();

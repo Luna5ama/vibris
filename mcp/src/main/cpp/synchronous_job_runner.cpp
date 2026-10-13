@@ -999,6 +999,17 @@ ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const 
             proto::CAPABILITY_CAMERA_MOTION) == server.capabilities().end()) {
         return ToolFailure{"UNSUPPORTED_ACTION", "The connected runtime does not support camera_motion.", false};
     }
+    if (const auto actions = arguments.find("actions"); actions != arguments.end() && actions->is_array() &&
+        std::any_of(actions->begin(), actions->end(), [](const Json& action) {
+            if (action.value("type", std::string{}) != "camera_motion") return false;
+            const auto& keys = action.at("keyframes");
+            return std::any_of(keys.begin(), keys.end(), [](const Json& key) {
+                return key.value("x_delta", 0.0) != 0.0 || key.value("y_delta", 0.0) != 0.0 || key.value("z_delta", 0.0) != 0.0;
+            });
+        }) && std::find(server.capabilities().begin(), server.capabilities().end(),
+            proto::CAPABILITY_CAMERA_TRANSLATION) == server.capabilities().end()) {
+        return ToolFailure{"UNSUPPORTED_ACTION", "The connected runtime does not support camera XYZ translation.", false};
+    }
     const auto request_id = detail::generate_uuid();
     report_progress(control.progress, request_id, "loading", false);
     sources_.prepare(tool_name, arguments, server);

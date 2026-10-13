@@ -45,6 +45,7 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
     fun isIdle(): Boolean = pendingOperations.get() == 0
 
     override fun supportsCameraMotion(): Boolean = host.supportsCameraMotion()
+    override fun supportsCameraTranslation(): Boolean = host.supportsCameraTranslation()
 
     override fun cameraMotion(
         request: dev.vibris.api.CameraMotionPlan,

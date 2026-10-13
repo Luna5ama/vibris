@@ -511,6 +511,19 @@ void bounded_camera_motion_schema_and_restore_policy() {
         }})}};
     require(std::holds_alternative<Json>(registry.invoke("vibris_run_actions", arguments)),
         "valid camera motion was rejected");
+    auto translation = arguments;
+    translation["actions"][0]["keyframes"][1]["x_delta"] = 2.0;
+    translation["actions"][0]["keyframes"][1]["y_delta"] = 1.0;
+    translation["actions"][0]["keyframes"][1]["z_delta"] = -2.0;
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_actions",translation)),"valid XYZ trajectory rejected");
+    for(const char* axis : {"x_delta","y_delta","z_delta"}) {
+        auto bad=translation;bad["actions"][0]["keyframes"][1][axis]=17.0;
+        require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions",bad)),"unbounded XYZ accepted");
+        bad=translation;bad["actions"][0]["keyframes"][0][axis]=1.0;
+        require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions",bad)),"initial XYZ jump accepted");
+    }
+    auto too_fast=translation;too_fast["actions"][0]["keyframes"][1]["frame_offset"]=1;
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions",too_fast)),"unbounded XYZ speed accepted");
     auto invalid = arguments;
     invalid["actions"][0]["keyframes"][1]["frame_offset"] = 240;
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),

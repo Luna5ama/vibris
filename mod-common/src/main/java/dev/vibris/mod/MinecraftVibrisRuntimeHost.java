@@ -99,6 +99,9 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	public boolean supportsCameraMotion() { return true; }
 
 	@Override
+	public boolean supportsCameraTranslation() { return true; }
+
+	@Override
 	public CompletionStage<CameraMotionResult> cameraMotion(CameraMotionPlan request, List<CapturePlan> plans,
 		ArtifactSink sink, RenderedFrameClock frames, CancellationToken cancellation) {
 		cancellation.throwIfCancellationRequested();
@@ -109,6 +112,15 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		if (plans.size() != request.frameCount()) throw new IllegalArgumentException("Camera frame plans are incomplete");
 		var player = minecraft.player;
 		var level = minecraft.level;
+		double x = player.getX(), y = player.getY(), z = player.getZ();
+		double previousX = player.xo, previousY = player.yo, previousZ = player.zo;
+		double previousRenderX = player.xOld, previousRenderY = player.yOld, previousRenderZ = player.zOld;
+		for (var key : request.hasTranslation() ? request.keyframes() : List.<CameraMotionPlan.Keyframe>of()) {
+			var target = net.minecraft.core.BlockPos.containing(x+key.xDelta(), y+key.yDelta(), z+key.zDelta());
+			if (!level.hasChunkAt(target) || !level.getWorldBorder().isWithinBounds(target)) {
+				throw new IllegalArgumentException("Camera translation requires loaded chunks within the world border");
+			}
+		}
 		float yaw = player.getYRot(), pitch = player.getXRot();
 		float previousYaw = player.yRotO, previousPitch = player.xRotO;
 		int width = minecraft.getWindow().getWidth(), height = minecraft.getWindow().getHeight();
@@ -119,7 +131,9 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 			TemporalResetResult reset = resetTemporal(cancellation);
 			if (!reset.successful()) throw new IllegalStateException("Camera temporal reset failed");
 		} catch (Throwable failure) { time.close(); throw failure; }
-		CameraMotionController session = new CameraMotionController(request, yaw, pitch, frames.currentFrame(),
+		CameraMotionController session;
+		try {
+			session = new CameraMotionController(request, yaw, pitch, frames.currentFrame(),
 			System.nanoTime() + TimeUnit.SECONDS.toNanos(60), cancellation, new CameraMotionController.Driver() {
 			private void requirePlayer() {
 				if (minecraft.player != player || minecraft.level != level) {
@@ -128,6 +142,13 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 				if (minecraft.getWindow().getWidth() != width || minecraft.getWindow().getHeight() != height) {
 					throw new IllegalStateException("Camera viewport changed");
 				}
+			}
+			@Override public void translate(double dx, double dy, double dz) {
+				requirePlayer();
+				if (!request.hasTranslation()) return;
+				var target = net.minecraft.core.BlockPos.containing(x+dx, y+dy, z+dz);
+				if (!level.hasChunkAt(target)) throw new IllegalStateException("Camera translation left loaded chunks");
+				player.snapTo(x+dx, y+dy, z+dz, player.getYRot(), player.getXRot());
 			}
 			@Override public void rotate(double y, double p) {
 				requirePlayer();
@@ -154,10 +175,16 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 					if (minecraft.player != player || minecraft.level != level) {
 						throw new IllegalStateException("Camera world changed during restoration");
 					}
+					if (request.hasTranslation()) {
+						player.snapTo(x, y, z, yaw, pitch);
+						player.xo = previousX; player.yo = previousY; player.zo = previousZ;
+						player.xOld = previousRenderX; player.yOld = previousRenderY; player.zOld = previousRenderZ;
+					}
 					player.setYRot(yaw); player.setXRot(pitch); player.yRotO = previousYaw; player.xRotO = previousPitch;
 				} finally { time.close(); }
 			}
 			});
+		} catch (Throwable failure) { time.close(); throw failure; }
 		cameraMotion = session;
 		session.result().whenComplete((ignored, failure) -> {
             if (cameraMotion == session) cameraMotion = null;

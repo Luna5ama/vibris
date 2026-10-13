@@ -36,6 +36,7 @@ enum Capability {
     CAPABILITY_PASS_BOUNDARY_CAPTURE = 10;
     CAPABILITY_GRACEFUL_RESTART = 11;
     CAPABILITY_CAMERA_MOTION = 12;
+    CAPABILITY_CAMERA_TRANSLATION = 13;
 }
 
 message ClientMessage {
@@ -601,6 +602,9 @@ message CameraKeyframe {
     uint32 frame_offset = 1;
     double yaw_delta_degrees = 2;
     double pitch_delta_degrees = 3;
+    double x_delta = 4;
+    double y_delta = 5;
+    double z_delta = 6;
 }
 
 message CameraMotion {
@@ -627,6 +631,7 @@ message CameraMotionFrame {
     double planned_pitch_degrees = 7;
     CameraPose actual_pose = 8;
     CaptureReceipt capture = 9;
+    CameraPose planned_pose = 10;
 }
 
 message CameraMotionReceipt {

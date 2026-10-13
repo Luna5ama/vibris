@@ -4,6 +4,22 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class CameraMotionPlanTest {
+    @Test fun interpolatesAndBoundsEveryTranslationAxis() {
+        val plan = CameraMotionPlan(listOf(key(0), CameraMotionPlan.Keyframe(4,0.0,0.0,2.0,1.0,-2.0), key(8)),0,"move")
+        assertTrue(plan.hasTranslation())
+        assertEquals(CameraMotionPlan.Position(1.0,.5,-1.0),plan.positionDeltaAt(2))
+        assertEquals(CameraMotionPlan.Position(0.0,0.0,0.0),plan.positionDeltaAt(8))
+        for (bad in listOf(Double.NaN,Double.POSITIVE_INFINITY,16.01,-16.01)) {
+            assertThrows(IllegalArgumentException::class.java) { CameraMotionPlan.Keyframe(4,0.0,0.0,bad,0.0,0.0) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraMotionPlan(listOf(CameraMotionPlan.Keyframe(0,0.0,0.0,1.0,0.0,0.0),key(4)),0,"move")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraMotionPlan(listOf(key(0),CameraMotionPlan.Keyframe(1,0.0,0.0,2.0,0.0,0.0)),0,"move")
+        }
+    }
+
     private fun key(frame: Int, yaw: Double = 0.0, pitch: Double = 0.0) = CameraMotionPlan.Keyframe(frame, yaw, pitch)
 
     @Test

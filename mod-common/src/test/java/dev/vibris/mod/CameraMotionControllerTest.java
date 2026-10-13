@@ -9,20 +9,55 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CameraMotionControllerTest {
+    static CameraMotionController translating(Driver d, AtomicBoolean cancelled) {
+        var p=new CameraMotionPlan(List.of(new CameraMotionPlan.Keyframe(0,0,0),
+            new CameraMotionPlan.Keyframe(4,0,0,2,1,-2),new CameraMotionPlan.Keyframe(8,0,0)),0,"move");
+        return new CameraMotionController(p,179,-14,100,1000,cancelled::get,d);
+    }
+    @Test void xyzMovementExportsActualAndPlannedPositionsAndRestoresOnSuccess() {
+        Driver d=new Driver();var c=translating(d,new AtomicBoolean());
+        for(int i=0;i<9;i++)frame(c,101+i,10*i);
+        var samples=c.result().join().samples();assertEquals(9,samples.size());
+        assertEquals(3,samples.get(4).actualPose().x());
+        assertEquals(3,samples.get(4).actualPose().y());
+        assertEquals(1,samples.get(4).actualPose().z());
+        for(var s:samples){assertEquals(s.plannedPose().x(),s.actualPose().x());
+            assertEquals(s.plannedPose().y(),s.actualPose().y());assertEquals(s.plannedPose().z(),s.actualPose().z());}
+        restored(d);
+    }
+    @Test void wrongPositionStopsBeforeReadbackAndRestores() {
+        Driver d=new Driver();d.ignoreTranslation=true;var c=translating(d,new AtomicBoolean());
+        frame(c,101,0);frame(c,102,10);
+        assertThrows(CompletionException.class,()->c.result().join());assertEquals(1,d.captures);restored(d);
+    }
+    @Test void movedPositionRestoresAfterCancellationTimeoutAndReadbackError() {
+        for(int reason=0;reason<3;reason++){
+            Driver d=new Driver();var cancelled=new AtomicBoolean();var c=translating(d,cancelled);
+            frame(c,101,0);frame(c,102,10);assertTrue(d.x>1);
+            if(reason==0){cancelled.set(true);c.check(30);assertThrows(CancellationException.class,()->c.result().join());}
+            else {if(reason==1)c.check(1000);else{d.captureFailure=true;frame(c,103,20);}
+                assertThrows(CompletionException.class,()->c.result().join());}
+            restored(d);
+        }
+    }
+
     static class Driver implements CameraMotionController.Driver {
         double yaw = 179.0, pitch = -14.0;
+        double x=1, y=2, z=3;
+        boolean ignoreTranslation;
+        public void translate(double dx,double dy,double dz) { if(!ignoreTranslation){x=1+dx;y=2+dy;z=3+dz;} }
         int restores, captures, rotations;
         boolean wrongFrame, wrongPose, wrongClock, captureFailure, restoreFailure;
         public void rotate(double y, double p) { yaw = y; pitch = p; rotations++; }
         public float shaderTimeSeconds() { return wrongClock ? Float.NaN : rotations * (1.0F / 60.0F); }
-        public CameraPose actualPose() { return new CameraPose(1, 2, 3, yaw + (wrongPose ? 1 : 0), pitch); }
+        public CameraPose actualPose() { return new CameraPose(x, y, z, yaw + (wrongPose ? 1 : 0), pitch); }
         public CaptureResult capture(int offset, long frame) {
             captures++;
             if (captureFailure) throw new IllegalStateException("readback failed");
             return new CaptureResult(frame + (wrongFrame ? 1 : 0), List.of());
         }
         public void restore() {
-            restores++; yaw = 179.0; pitch = -14.0;
+            restores++; yaw = 179.0; pitch = -14.0; x=1;y=2;z=3;
             if (restoreFailure) throw new IllegalStateException("restore failed");
         }
     }
@@ -37,6 +72,7 @@ class CameraMotionControllerTest {
         controller.beforeFrame(id, now); controller.afterFrame(id, now + 1);
     }
     static void restored(Driver driver) {
+        assertEquals(1,driver.x);assertEquals(2,driver.y);assertEquals(3,driver.z);
         assertEquals(1, driver.restores); assertEquals(179.0, driver.yaw); assertEquals(-14.0, driver.pitch);
     }
 

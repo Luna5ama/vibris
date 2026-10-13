@@ -511,7 +511,7 @@ void camera_motion_is_typed_and_forces_transactional_restoration() {
         {"type", "camera_motion"}, {"artifact_prefix", "turn"},
         {"keyframes", Json::array({
             {{"frame_offset", 0}, {"yaw_delta_degrees", 0}, {"pitch_delta_degrees", 0}},
-            {{"frame_offset", 15}, {"yaw_delta_degrees", 90}, {"pitch_delta_degrees", -5}},
+            {{"frame_offset", 15}, {"yaw_delta_degrees", 90}, {"pitch_delta_degrees", -5}, {"x_delta",2.0}, {"y_delta",1.0}, {"z_delta",-2.0}},
         })},
     }})}};
     const auto request = JobProtocol::request("vibris_run_actions", arguments, config(), scene(),
@@ -522,6 +522,8 @@ void camera_motion_is_typed_and_forces_transactional_restoration() {
     require(motion.warmup_frames() == 128 && motion.keyframes_size() == 2 &&
         motion.keyframes(1).frame_offset() == 15 && motion.keyframes(1).yaw_delta_degrees() == 90,
         "camera trajectory fields or default warmup changed");
+    require(motion.keyframes(1).x_delta()==2.0 && motion.keyframes(1).y_delta()==1.0 && motion.keyframes(1).z_delta()==-2.0,
+        "camera XYZ fields lost in protocol mapping");
     require(job.restore_state().on_success() && job.restore_state().on_error(),
         "camera motion did not force full restoration");
 }

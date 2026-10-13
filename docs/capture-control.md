@@ -373,10 +373,18 @@ or packaging does not authorize deployment, Minecraft restart, launcher restart,
 The protocol extension is additive; the protocol version stays 3.1. A new client rejects this action on older runtimes
 before preparing sources or submitting the Core job. Existing actions retain their behavior.
 
-The action controls first-person yaw/pitch only. Angles are degree offsets from the starting player rotation, using
+The action controls first-person yaw/pitch, with optional bounded world-axis XYZ offsets on runtimes advertising `CAPABILITY_CAMERA_TRANSLATION`. Angles are degree offsets from the starting player rotation, using
 Minecraft's conventions. Yaw follows the explicit continuous offset; no shortest-arc wrap is introduced. Recorded
-actual yaw is normalized to [-180, 180). Every requested absolute pitch must remain within [-90, 90]. No translation,
-physics, world edits, input-lock changes, or arbitrary scripts are supported.
+actual yaw is normalized to [-180, 180). Every requested absolute pitch must remain within [-90, 90]. No physics-driven movement, world edits, input-lock changes, or arbitrary scripts are supported.
+Optional `x_delta`, `y_delta`, `z_delta` default to zero and are world-axis offsets in blocks from the starting player
+position. Each component must be finite and within +/-16 blocks; interpolation is limited to one block per rendered
+frame on each axis. The initial offsets must all be zero. Nonzero offsets require the separate translation capability,
+so a new client rejects older runtimes before preparing sources or submitting a job. Target chunks must already be
+loaded and lie within the world border. The local player is positioned directly within the existing deterministic
+simulation scope; no input injection or collision-driven travel is used. Every frame verifies the actual first-person
+eye position against the interpolated position and exports `planned_pose` alongside `actual_pose`. Player position,
+old interpolation coordinates and rotation are restored locally before the future completes on success, error or
+cancellation; the enclosing job also restores its source/settings/scene baseline.
 
 There must be 2-16 keyframes with strictly increasing frame offsets, starting at offset zero with zero yaw/pitch
 deltas. The final offset is at most 239; yaw deltas are finite and bounded to +/-720 degrees, pitch deltas to +/-180.
@@ -412,6 +420,6 @@ sequence as complete. Use the full result file when the compact MCP projection o
 
 Camera motion forces both success and error restoration; explicitly disabling either in MCP arguments is rejected.
 Raw protocol callers must enable both restore flags. A verified Core source/settings/scene baseline is required.
-The camera is restored and the deterministic clock scope is released locally before the motion future completes;
+The camera position and rotation are restored and the deterministic clock scope is released locally before the motion future completes;
 the enclosing job then performs normal source/config/scene restoration and temporal reset. The existing window-position
 preservation remains active. No game restart is implicit in this action.

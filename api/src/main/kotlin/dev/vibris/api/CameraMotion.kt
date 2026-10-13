@@ -12,6 +12,15 @@ data class CameraMotionPlan(
         require(keyframes.first().yawDeltaDegrees == 0.0 && keyframes.first().pitchDeltaDegrees == 0.0) {
             "Camera motion must start at the current rotation"
         }
+        require(keyframes.first().let { it.xDelta == 0.0 && it.yDelta == 0.0 && it.zDelta == 0.0 }) {
+            "Camera motion must start at the current position"
+        }
+        require(keyframes.zipWithNext().all { (a, b) ->
+            val frames = (b.frameOffset - a.frameOffset).toDouble()
+            frames > 0 && listOf(b.xDelta-a.xDelta, b.yDelta-a.yDelta, b.zDelta-a.zDelta).all {
+                kotlin.math.abs(it) <= frames
+            }
+        }) { "Camera translation is limited to one block per rendered frame on each axis" }
         require(keyframes.zipWithNext().all { (a, b) -> a.frameOffset < b.frameOffset }) {
             "Camera keyframe offsets must be strictly increasing"
         }
@@ -43,11 +52,33 @@ data class CameraMotionPlan(
         )
     }
 
+    fun positionDeltaAt(frameOffset: Int): Position {
+        require(frameOffset in 0 until frameCount()) { "Camera frame offset is out of bounds" }
+        val end = keyframes.indexOfFirst { it.frameOffset >= frameOffset }.coerceAtLeast(0)
+        val b = keyframes[end]
+        val a = keyframes[(end - 1).coerceAtLeast(0)]
+        val t = if (a.frameOffset == b.frameOffset) 0.0 else
+            (frameOffset - a.frameOffset).toDouble() / (b.frameOffset - a.frameOffset)
+        return Position(a.xDelta+(b.xDelta-a.xDelta)*t, a.yDelta+(b.yDelta-a.yDelta)*t,
+            a.zDelta+(b.zDelta-a.zDelta)*t)
+    }
+
+    fun hasTranslation(): Boolean = keyframes.any { it.xDelta != 0.0 || it.yDelta != 0.0 || it.zDelta != 0.0 }
+
+    @JvmRecord
+    data class Position(val x: Double, val y: Double, val z: Double)
+
     fun artifactName(frameOffset: Int): String = "$artifactPrefix-${frameOffset.toString().padStart(4, '0')}"
 
     @JvmRecord
-    data class Keyframe(val frameOffset: Int, val yawDeltaDegrees: Double, val pitchDeltaDegrees: Double) {
+    data class Keyframe @JvmOverloads constructor(
+        val frameOffset: Int, val yawDeltaDegrees: Double, val pitchDeltaDegrees: Double,
+        val xDelta: Double = 0.0, val yDelta: Double = 0.0, val zDelta: Double = 0.0,
+    ) {
         init {
+            require(listOf(xDelta, yDelta, zDelta).all { it.isFinite() && it in -16.0..16.0 }) {
+                "Camera XYZ offsets must be finite and within [-16, 16] blocks"
+            }
             require(frameOffset in 0..239) { "Camera motion is limited to 240 trajectory frames" }
             require(yawDeltaDegrees.isFinite() && yawDeltaDegrees in -720.0..720.0) {
                 "Camera yaw delta must be finite and within [-720, 720] degrees"
@@ -79,7 +110,7 @@ data class CameraPose(val x: Double, val y: Double, val z: Double, val yawDegree
 }
 
 @JvmRecord
-data class CameraMotionSample(
+data class CameraMotionSample @JvmOverloads constructor(
     val frameOffset: Int,
     val renderedFrameId: Long,
     val renderStartedNanos: Long,
@@ -87,6 +118,8 @@ data class CameraMotionSample(
     val shaderTimeSeconds: Float,
     val plannedRotation: CameraMotionPlan.Rotation,
     val actualPose: CameraPose,
+    val plannedPose: CameraPose = CameraPose(actualPose.x, actualPose.y, actualPose.z,
+        plannedRotation.yawDegrees, plannedRotation.pitchDegrees),
 )
 
 @JvmRecord

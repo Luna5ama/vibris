@@ -5,6 +5,7 @@ import java.util.concurrent.CompletionStage
 
 interface VibrisRuntimeAdapter : AutoCloseable {
     fun supportsCameraMotion(): Boolean = false
+    fun supportsCameraTranslation(): Boolean = false
 
     fun cameraMotion(
         request: CameraMotionPlan,

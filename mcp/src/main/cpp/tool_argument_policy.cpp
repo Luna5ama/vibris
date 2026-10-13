@@ -144,7 +144,12 @@ std::optional<InvocationError> validate_argument_policy(std::string_view tool_na
                     return InvocationError{InvocationErrorCode::InvalidArguments,
                         "camera_motion requires 2-16 keyframes starting at frame zero with zero deltas"};
                 }
+                for (const auto axis : {"x_delta", "y_delta", "z_delta"}) {
+                    if (keys.front().value(axis, 0.0) != 0.0) return InvocationError{
+                        InvocationErrorCode::InvalidArguments, "camera_motion must start at the current position"};
+                }
                 std::int64_t previous = -1;
+                Json previous_key;
                 for (const auto& key : keys) {
                     const auto offset = key.at("frame_offset").get<std::int64_t>();
                     const auto yaw = key.at("yaw_delta_degrees").get<double>();
@@ -154,7 +159,16 @@ std::optional<InvocationError> validate_argument_policy(std::string_view tool_na
                         return InvocationError{InvocationErrorCode::InvalidArguments,
                             "camera_motion keyframes must be ordered, finite and bounded"};
                     }
+                    for (const auto axis : {"x_delta", "y_delta", "z_delta"}) {
+                        const double value = key.value(axis, 0.0);
+                        if (!std::isfinite(value) || std::abs(value) > 16.0 ||
+                            (previous >= 0 && std::abs(value-previous_key.value(axis, 0.0)) > offset-previous)) {
+                            return InvocationError{InvocationErrorCode::InvalidArguments,
+                                "camera_motion XYZ offsets must be finite, within 16 blocks and at most one block per frame"};
+                        }
+                    }
                     previous = offset;
+                    previous_key = key;
                 }
             }
             if (type == "load_shader") {

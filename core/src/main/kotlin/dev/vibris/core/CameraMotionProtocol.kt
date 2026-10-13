@@ -12,7 +12,7 @@ import dev.vibris.protocol.v2.JobResult
 
 internal object CameraMotionProtocol {
     fun toApi(value: CameraMotion): CameraMotionPlan = CameraMotionPlan(
-        value.keyframesList.map { CameraMotionPlan.Keyframe(it.frameOffset, it.yawDeltaDegrees, it.pitchDeltaDegrees) },
+        value.keyframesList.map { CameraMotionPlan.Keyframe(it.frameOffset, it.yawDeltaDegrees, it.pitchDeltaDegrees, it.xDelta, it.yDelta, it.zDelta) },
         value.warmupFrames,
         value.artifactPrefix,
     )
@@ -37,6 +37,16 @@ internal object CameraMotionProtocol {
         return CameraMotionReceipt.newBuilder().setWarmupFrames(request.warmupFrames).apply {
             motion.samples.forEachIndexed { index, sample ->
                 val actual = sample.actualPose
+                val planned = sample.plannedPose
+                val anchor = motion.samples.first().plannedPose
+                val delta = request.positionDeltaAt(index)
+                check(listOf(planned.x-anchor.x-delta.x, planned.y-anchor.y-delta.y,
+                    planned.z-anchor.z-delta.z).all { kotlin.math.abs(it) <= 0.0001 }) {
+                    "Camera motion returned a different planned position path"
+                }
+                check(listOf(actual.x-planned.x, actual.y-planned.y, actual.z-planned.z).all {
+                    kotlin.math.abs(it) <= 0.0001
+                }) { "Camera motion returned an incorrect actual position" }
                 check(sample.frameOffset == index && motion.captures[index].frameId == sample.renderedFrameId)
                 check(sample.renderEndedNanos >= sample.renderStartedNanos &&
                     sample.shaderTimeSeconds.isFinite() &&
@@ -47,6 +57,9 @@ internal object CameraMotionProtocol {
                     .setFrameOffset(index).setRenderedFrameId(sample.renderedFrameId)
                     .setRenderStartedNanos(sample.renderStartedNanos).setRenderEndedNanos(sample.renderEndedNanos)
                     .setShaderTimeSeconds(sample.shaderTimeSeconds)
+                    .setPlannedPose(dev.vibris.protocol.v2.CameraPose.newBuilder()
+                        .setX(planned.x).setY(planned.y).setZ(planned.z)
+                        .setYawDegrees(planned.yawDegrees).setPitchDegrees(planned.pitchDegrees))
                     .setPlannedYawDegrees(sample.plannedRotation.yawDegrees)
                     .setPlannedPitchDegrees(sample.plannedRotation.pitchDegrees)
                     .setActualPose(dev.vibris.protocol.v2.CameraPose.newBuilder()

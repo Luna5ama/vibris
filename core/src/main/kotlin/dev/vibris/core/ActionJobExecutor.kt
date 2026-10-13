@@ -347,6 +347,10 @@ internal class ActionJobExecutor(
                                 throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST, "Runtime does not support camera motion.")
                             }
                             val request = CameraMotionProtocol.toApi(step.runtimeAction!!.cameraMotion)
+                            if (request.hasTranslation() && !runtime.supportsCameraTranslation()) {
+                                throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST,
+                                    "Runtime does not support camera XYZ translation.")
+                            }
                             val planned = CameraMotionProtocol.plans(request, runtime.getResourceCatalog())
                             planned.forEach { prepared.addPlan(it.capture, it.estimatedBytes) }
                             val plans = planned.map { it.capture }
