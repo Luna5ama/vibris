@@ -89,7 +89,13 @@ add_custom_command(
     DEPENDS "${PROTO_FILE}" protobuf::protoc gRPC::grpc_cpp_plugin
     VERBATIM)
 
+# A generated protocol ABI change must invalidate every consuming translation unit,
+# including cached MSBuild objects whose include tracking predates regeneration.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROTO_FILE}")
+file(SHA256 "${PROTO_FILE}" VIBRIS_PROTOCOL_BUILD_SHA256)
 add_library(vibris_control_protocol STATIC ${GENERATED_SOURCES} ${GENERATED_HEADERS})
+target_compile_definitions(vibris_control_protocol PUBLIC
+    VIBRIS_PROTOCOL_BUILD_SHA256="${VIBRIS_PROTOCOL_BUILD_SHA256}")
 target_include_directories(vibris_control_protocol SYSTEM PUBLIC "${GENERATED_DIR}")
 target_link_libraries(vibris_control_protocol PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 

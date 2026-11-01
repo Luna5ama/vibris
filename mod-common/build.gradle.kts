@@ -4,7 +4,7 @@ plugins {
 }
 
 val minecraftVersion = "1.21.11"
-val irisVersion = "1.10.6-vibris.2+mc1.21.11"
+val irisVersion = providers.gradleProperty("vibris.irisVersion").get()
 
 repositories {
     mavenLocal()
@@ -17,7 +17,9 @@ dependencies {
     minecraft("com.mojang:minecraft:$minecraftVersion")
     mappings(loom.officialMojangMappings())
     modCompileOnly("net.fabricmc:fabric-loader:0.18.1")
-    modCompileOnly("net.irisshaders:common:$irisVersion")
+    // Consume the included checkout's named source variant, not Loom's cached remap of
+    // an earlier JAR published under the same development coordinate.
+    compileOnly("net.irisshaders:common:$irisVersion") { targetConfiguration = "namedElements" }
     modCompileOnly(files(rootProject.file("../Iris/custom_sodium/sodium-fabric-0.8.6-SNAPSHOT+mc1.21.11-local.jar")))
 
     implementation(project(":vibris-api"))
@@ -28,7 +30,7 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
-    testImplementation("net.irisshaders:common:$irisVersion")
+    testImplementation("net.irisshaders:common:$irisVersion") { targetConfiguration = "namedElements" }
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

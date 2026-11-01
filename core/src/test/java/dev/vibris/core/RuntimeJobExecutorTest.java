@@ -67,6 +67,16 @@ class RuntimeJobExecutorTest {
 
         assertEquals(List.of("link:A", "reload", "context", "reset", "compile_catalog", "frames"),
             fixture.runtime.events);
+        var timings = terminal.completed().getResult().getTimings();
+        var actions = timings.getExecutionSpansList().stream()
+            .filter(span -> span.getOperation().startsWith("action.")).toList();
+        assertEquals(2, actions.size());
+        assertEquals("action.load", actions.get(0).getOperation());
+        assertEquals("action.wait", actions.get(1).getOperation());
+        assertTrue(actions.get(1).getStartOffsetNs() >=
+            actions.get(0).getStartOffsetNs() + actions.get(0).getDurationNs());
+        assertTrue(timings.getExecutionSpansList().stream().anyMatch(span -> span.getOperation().equals("scene.apply")));
+        assertEquals(3, terminal.completed().getResult().getActionReceipts(1).getWaitFrames().getCompletedFrames());
         assertEquals("32", fixture.runtime.lastShaderConfig.get("SETTING_SAMPLE_COUNT"));
         assertEquals(2, terminal.completed().getResult().getActionReceiptsCount());
         assertEquals(ActionKind.ACTION_KIND_LOAD_SHADER,
@@ -143,7 +153,7 @@ class RuntimeJobExecutorTest {
             fixture.loadJob(equivalent, ShaderConfig.newBuilder().setPreserveCurrent(true).build(), true),
             ignored -> {});
 
-        assertEquals(List.of("link:same", "context", "reset", "compile_catalog", "link:same", "context", "reset"),
+        assertEquals(List.of("compile_catalog", "link:same", "context", "reset", "compile_catalog", "link:same", "context", "reset"),
             fixture.runtime.events);
         assertEquals(baseline.uuid, fixture.registry.activeUuid());
         assertEquals(baseline.uuid, terminal.completed().getResult().getRestoration().getActualSourceUuid());
@@ -165,8 +175,22 @@ class RuntimeJobExecutorTest {
 
         fixture.executor.execute(fixture.loadJob(equivalent, config, false), ignored -> {});
 
-        assertEquals(List.of("link:same", "context", "reset", "compile_catalog"), fixture.runtime.events);
+        assertEquals(List.of("compile_catalog", "link:same", "context", "reset", "compile_catalog"), fixture.runtime.events);
         assertEquals(equivalent.uuid, fixture.registry.activeUuid());
+    }
+
+    @Test
+    void externalShaderGenerationInvalidatesReuseOnce() throws Exception {
+        Fixture fixture = new Fixture();
+        Source source = fixture.source("same");
+        fixture.executor.execute(fixture.loadJob(source), ignored -> {});
+        fixture.runtime.compileCatalog = CompileCatalog.empty(1);
+        fixture.runtime.events.clear();
+        fixture.executor.execute(fixture.loadJob(source), ignored -> {});
+        assertTrue(fixture.runtime.events.contains("reload"));
+        fixture.runtime.events.clear();
+        fixture.executor.execute(fixture.loadJob(source), ignored -> {});
+        assertFalse(fixture.runtime.events.contains("reload"));
     }
 
     @Test
@@ -381,10 +405,11 @@ class RuntimeJobExecutorTest {
     }
 
     @Test
-    void compileValidationReturnsCompleteCatalogDiffAndRestoresWithoutRendering() throws Exception {
+    void compileValidationReturnsCompleteCatalogDiffWithoutRestoringOrRendering() throws Exception {
         Fixture fixture = new Fixture();
         Source baseline = fixture.source("baseline");
         fixture.runtime.reloads.add(ReloadResult.success(EffectiveShaderSettings.empty(), List.of()));
+        fixture.runtime.compileCatalog = catalog(List.of(), false);
         fixture.executor.execute(fixture.loadJob(baseline), ignored -> {});
         fixture.runtime.events.clear();
 
@@ -419,9 +444,10 @@ class RuntimeJobExecutorTest {
         assertEquals(candidate.uuid, compile.getProvenance().getActiveSourceUuid());
         assertEquals(candidate.uuid, result.getProvenance().getActiveSourceUuid());
         assertEquals(ReceiptStatus.RECEIPT_STATUS_OK, result.getRestoration().getStatus());
-        assertEquals(baseline.uuid, fixture.registry.activeUuid());
+        assertEquals(candidate.uuid, fixture.registry.activeUuid());
+        assertFalse(result.getRestoration().getTemporalStateReset());
         assertFalse(fixture.runtime.events.contains("frames"));
-        assertEquals(1, fixture.runtime.events.stream().filter("context"::equals).count());
+        assertEquals(0, fixture.runtime.events.stream().filter("context"::equals).count());
         assertEquals(2, fixture.runtime.events.stream().filter("compile_catalog"::equals).count());
     }
 
@@ -430,6 +456,7 @@ class RuntimeJobExecutorTest {
         Fixture fixture = new Fixture();
         Source baseline = fixture.source("baseline");
         fixture.runtime.reloads.add(ReloadResult.success(EffectiveShaderSettings.empty(), List.of()));
+        fixture.runtime.compileCatalog = catalog(List.of(), false);
         fixture.executor.execute(fixture.loadJob(baseline), ignored -> {});
         fixture.runtime.events.clear();
 

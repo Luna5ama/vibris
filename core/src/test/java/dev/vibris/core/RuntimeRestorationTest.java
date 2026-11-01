@@ -69,6 +69,63 @@ class RuntimeRestorationTest {
         assertEquals(baseline.uuid, fixture.registry.activeUuid());
     }
 
+    @Test
+    void successWithoutRestorationKeepsTheLoadedSourceAndScene() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.bootstrap();
+        Source candidate = fixture.source("candidate");
+        CoreJob job = fixture.job(candidate, false, 0, List.of(fixture.load(candidate, "candidate")));
+
+        TerminalResult result = fixture.executor.execute(job, ignored -> {});
+
+        assertEquals(candidate.uuid, fixture.registry.activeUuid());
+        assertEquals(1, fixture.runtime.events.stream().filter("reload"::equals).count());
+        assertEquals(1, fixture.runtime.events.stream().filter("context"::equals).count());
+        assertEquals(1, fixture.runtime.events.stream().filter("reset"::equals).count());
+        assertFalse(result.completed().getResult().getRestoration().getTemporalStateReset());
+        assertEquals(candidate.uuid, result.completed().getResult().getRestoration().getActualSourceUuid());
+    }
+
+    @Test
+    void failureWithoutRestorationKeepsTheLastSuccessfullyLoadedSource() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.bootstrap();
+        Source candidate = fixture.source("candidate");
+        CoreJob job = fixture.job(candidate, false, 0, List.of(fixture.load(candidate, "candidate"),
+            Action.newBuilder().setActivateSource(ActivateSource.newBuilder()
+                .setSourceUuid(UUID.randomUUID().toString())).build()));
+
+        RuntimeJobExecutor.Failure failure = assertThrows(RuntimeJobExecutor.Failure.class,
+            () -> fixture.executor.execute(job, ignored -> {}));
+
+        assertEquals(ErrorCode.ERROR_CODE_INVALID_SOURCE, failure.code);
+        assertEquals(candidate.uuid, fixture.registry.activeUuid());
+        assertEquals(1, fixture.runtime.events.stream().filter("reload"::equals).count());
+        assertEquals(1, fixture.runtime.events.stream().filter("context"::equals).count());
+        assertFalse(failure.restoration.getTemporalStateReset());
+        assertFalse(fixture.executor.hasPendingRecovery());
+    }
+
+    @Test
+    void cancellationWithoutRestorationDoesNotSwitchShaderOrWorldBack() throws Exception {
+        Fixture fixture = new Fixture();
+        fixture.bootstrap();
+        Source candidate = fixture.source("candidate");
+        CoreJob job = fixture.job(candidate, false, 0, List.of(fixture.load(candidate, "candidate"),
+            Action.newBuilder().setWaitFrames(WaitFrames.newBuilder().setFrameCount(2)).build()));
+        fixture.runtime.beforeCompileCatalogResult = job.cancellation::cancel;
+
+        RuntimeJobExecutor.Failure failure = assertThrows(RuntimeJobExecutor.Failure.class,
+            () -> fixture.executor.execute(job, ignored -> {}));
+
+        assertEquals(ErrorCode.ERROR_CODE_CANCELLED, failure.code);
+        assertEquals(candidate.uuid, fixture.registry.activeUuid());
+        assertEquals(1, fixture.runtime.events.stream().filter("reload"::equals).count());
+        assertEquals(1, fixture.runtime.events.stream().filter("context"::equals).count());
+        assertFalse(failure.restoration.getTemporalStateReset());
+        assertFalse(fixture.executor.hasPendingRecovery());
+    }
+
     private static EffectiveShaderSettings settings(String value, EffectiveShaderSettings.Origin origin) {
         return EffectiveShaderSettings.of(List.of(
             new EffectiveShaderSettings.Setting("QUALITY", value, "default", origin)

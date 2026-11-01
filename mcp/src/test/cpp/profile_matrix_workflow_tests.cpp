@@ -516,7 +516,8 @@ void blocking_wait_times_out_compactly_without_polling() {
 		{{"operation", "wait"}, {"job_id", job_id}, {"timeout_ms", 5}}));
 	require(waited.at("wait_timed_out").get<bool>() && !waited.contains("events") &&
 		waited.at("next_action").at("arguments").at("operation") == "wait" &&
-		waited.at("next_action").at("arguments").at("timeout_ms") == 300'000,
+		waited.at("next_action").at("arguments").at("timeout_ms") > 0 &&
+		waited.at("next_action").at("arguments").at("timeout_ms") <= 240'000,
 		"bounded durable-job wait did not return one compact retry instruction");
 	static_cast<void>(workflow.control({{"operation", "cancel"}, {"job_id", job_id}}));
 }

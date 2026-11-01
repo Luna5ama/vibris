@@ -49,7 +49,8 @@ int main(int argc, char** argv) {
             [&backend](std::string_view name, const vibris::mcp::Json& arguments) {
                 return backend.dispatch(name, arguments);
             });
-        const auto exit_code = vibris::mcp::McpStdioServer(std::cin, std::cout, tools).run();
+        const auto exit_code = vibris::mcp::McpStdioServer(std::cin, std::cout, tools,
+            [&backend] { backend.interrupt_waits(); }).run();
         if (const auto stats = backend.shutdown()) {
             std::cerr << "pending_peak=" << stats->peak_pending_requests << " pending_limit=" << pending_limit
                       << " completion_queues=" << stats->completion_queue_count

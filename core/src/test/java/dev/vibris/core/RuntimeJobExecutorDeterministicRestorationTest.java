@@ -235,6 +235,59 @@ class RuntimeJobExecutorDeterministicRestorationTest {
         assertEquals("context rejected", failure.getSuppressed()[0].getMessage());
     }
 
+    @Test
+    void rejectedContextWithoutRestorationDoesNotSwitchBackToThePreviousWorld() throws Exception {
+        Fixture fixture = new Fixture();
+        Source first = fixture.source("A");
+        Source second = fixture.source("B");
+        fixture.establish(first);
+        fixture.runtime.contexts.clear();
+        fixture.runtime.outcome = new DeterministicTemporalCaptureOutcome.ContextRejected(
+            ContextApplyResult.failure(fixture.nextContext, "rejected"), failure("context rejected"));
+
+        fixture.capture(second, ShaderConfig.newBuilder().setPreserveCurrent(true).build(), false);
+
+        assertEquals(first.lease.uuid(), fixture.registry.activeUuid());
+        assertEquals(List.of(fixture.nextContext), fixture.runtime.contexts);
+        assertEquals(1, fixture.runtime.reloadConfigs.size());
+    }
+
+    @Test
+    void rejectedReloadWithoutRestorationKeepsTheRequestedWorldAndPreservedPipeline() throws Exception {
+        Fixture fixture = new Fixture();
+        Source first = fixture.source("A");
+        Source second = fixture.source("B");
+        fixture.establish(first);
+        fixture.runtime.contexts.clear();
+        fixture.runtime.outcome = new DeterministicTemporalCaptureOutcome.ReloadRejected(
+            ContextApplyResult.success(fixture.nextContext),
+            ReloadResult.failurePreservingActiveState(fixture.runtime.settings, List.of()), failure("reload rejected"));
+
+        fixture.capture(second, ShaderConfig.newBuilder().setPreserveCurrent(true).build(), false);
+
+        assertEquals(first.lease.uuid(), fixture.registry.activeUuid());
+        assertEquals(List.of(fixture.nextContext), fixture.runtime.contexts);
+        assertEquals(1, fixture.runtime.reloadConfigs.size());
+    }
+
+    @Test
+    void exceptionalCompletionWithoutRestorationRepairsTheShaderWithoutSwitchingWorlds() throws Exception {
+        Fixture fixture = new Fixture();
+        Source first = fixture.source("A");
+        fixture.establish(first);
+        fixture.runtime.contexts.clear();
+        fixture.runtime.compoundFailure = new IllegalStateException("compound failed");
+
+        RuntimeJobExecutor.DeterministicPhaseFailure phaseFailure = assertThrows(
+            RuntimeJobExecutor.DeterministicPhaseFailure.class,
+            () -> fixture.capture(first, ShaderConfig.newBuilder().putValues("MODE", "new").build(), false));
+
+        assertEquals(dev.vibris.protocol.v2.ErrorCode.ERROR_CODE_CAPTURE_FAILED, phaseFailure.getFailure().code);
+        assertEquals(first.lease.uuid(), fixture.registry.activeUuid());
+        assertEquals(Map.of("MODE", "old"), fixture.runtime.reloadConfigs.getLast());
+        assertEquals(List.of(fixture.nextContext), fixture.runtime.contexts);
+    }
+
     private static DeterministicTemporalCaptureOutcome.Failure failure(String message) {
         return new DeterministicTemporalCaptureOutcome.Failure(
             DeterministicTemporalCaptureOutcome.FailureKind.OPERATION_FAILED,
@@ -279,7 +332,15 @@ class RuntimeJobExecutorDeterministicRestorationTest {
         }
 
         DeterministicTemporalCaptureOutcome capture(Source source, ShaderConfig config) throws Exception {
-            CoreJob job = job(source, nextContext);
+            return capture(source, config, true);
+        }
+
+        DeterministicTemporalCaptureOutcome capture(Source source, ShaderConfig config, boolean restore) throws Exception {
+            CoreJob original = job(source, nextContext);
+            JobSpec spec = original.submission.toBuilder().setRestoreState(
+                dev.vibris.protocol.v2.RestorePolicy.newBuilder().setOnError(restore)).build();
+            CoreJob job = new CoreJob(spec, original.requestId, WORKSPACE_ID, "message", null);
+            job.initialize(original.sources);
             CaptureJobExecutor captures = new CaptureJobExecutor(artifacts, 128);
             CaptureJobExecutor.ActionPrepared action = captures.prepareActions(
                 job,

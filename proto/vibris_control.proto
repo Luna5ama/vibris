@@ -907,6 +907,7 @@ message JobFailed {
     repeated ArtifactMetadata artifacts = 5;
     repeated ActionReceipt action_receipts = 6;
     repeated ActionReceipt prelude_receipts = 7;
+    repeated ExecutionSpan execution_spans = 8;
 }
 
 message ServerShuttingDown {
@@ -934,6 +935,14 @@ message JobTimings {
     uint64 queue_ms = 4;
     uint64 execution_ms = 5;
     uint64 total_ms = 6;
+    repeated ExecutionSpan execution_spans = 7;
+}
+
+// Spans may nest. Offsets are relative to job acceptance on the same monotonic clock.
+message ExecutionSpan {
+    string operation = 1;
+    uint64 start_offset_ns = 2;
+    uint64 duration_ns = 3;
 }
 
 enum ReceiptStatus {

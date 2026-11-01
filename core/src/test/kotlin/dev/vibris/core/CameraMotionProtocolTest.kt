@@ -38,15 +38,13 @@ class CameraMotionProtocolTest {
     )
 
     @Test
-    fun actionKeepsTypedKeyframesAndRequiresBothRestorationPaths() {
+    fun actionKeepsTypedKeyframesWithoutRequiringGlobalRestoration() {
         val program = CaptureProgramBuilder(64)
-        for ((success, error) in listOf(false to false, true to false, false to true)) {
-            val failure = assertThrows(RuntimeJobExecutor.Failure::class.java) {
-                program.actions(job(success, error), ResourceCatalog.empty())
-            }
-            assertTrue(failure.message!!.contains("restoration"))
+        for ((success, error) in listOf(false to false, true to false, false to true, true to true)) {
+            val prepared = program.actions(job(success, error), ResourceCatalog.empty())
+            assertEquals(CaptureProgramBuilder.ActionType.CAMERA_MOTION, prepared.steps.single().type)
         }
-        val prepared = program.actions(job(true, true), ResourceCatalog.empty())
+        val prepared = program.actions(job(false, false), ResourceCatalog.empty())
         assertEquals(CaptureProgramBuilder.ActionType.CAMERA_MOTION, prepared.steps.single().type)
         assertEquals(ActionKind.ACTION_KIND_CAMERA_MOTION, RuntimeActionProtocol.kind(action()))
         assertEquals(3, CameraMotionProtocol.toApi(action().cameraMotion).frameCount())

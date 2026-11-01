@@ -18,6 +18,7 @@ public:
     McpBackend& operator=(const McpBackend&) = delete;
 
     [[nodiscard]] ToolOutcome dispatch(std::string_view name, const Json& arguments);
+    void interrupt_waits();
     [[nodiscard]] std::optional<GrpcClientStats> shutdown();
 
 private:

@@ -37,6 +37,17 @@ Build the JVM modules and run the default tests with Gradle:
 .\gradlew.bat test
 ```
 
+Build the matched Fabric runtime and sibling Iris distribution with the release version tuple:
+
+```powershell
+.\gradlew.bat '-Pbuild.release=true' :vibris-mod-fabric:build :Iris:fabric:remapJar
+```
+
+The required Iris version is pinned once in `gradle.properties` (`vibris.irisVersion`) and expanded into
+Fabric metadata. The current tuple requires Iris `1.10.6-vibris.3+mc1.21.11`, which supplies shadow-only
+terrain task submission and readiness. Both modules consume the included Iris checkout's `namedElements`
+compile variant; a cached remap of an older development JAR must not substitute for current source.
+
 Build the optimized replay executables:
 
 ```powershell

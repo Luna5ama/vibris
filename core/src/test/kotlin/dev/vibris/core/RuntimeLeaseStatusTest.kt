@@ -164,6 +164,9 @@ class RuntimeLeaseStatusTest {
         assertTrue(failed.error.code == ErrorCode.ERROR_CODE_RESTORE_FAILED)
         assertTrue(failed.restoration.status == ReceiptStatus.RECEIPT_STATUS_FAILED)
 
+        assertTrue(engine.awaitStatus(
+            StatusWaitCondition.STATUS_WAIT_CONDITION_JOB_TERMINAL, "candidate", 2_000,
+        ).satisfied)
         val recovering = descriptor.status(engine, StatusDetail.STATUS_DETAIL_FULL)
         assertTrue(recovering.state == ServerState.SERVER_STATE_RECOVERING)
         assertFalse(recovering.hasActiveLease())

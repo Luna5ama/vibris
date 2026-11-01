@@ -21,6 +21,32 @@ internal class CoreJob(
     @JvmField
     val cancellation: CancellationToken.Source = CancellationToken.source()
 
+    private val spans = ArrayList<dev.vibris.protocol.v2.ExecutionSpan>()
+
+    fun recordSpan(operation: String, startedNanos: Long) =
+        recordMeasuredSpan(operation, startedNanos, System.nanoTime() - startedNanos)
+
+    @Synchronized
+    fun recordMeasuredSpan(operation: String, startedNanos: Long, durationNanos: Long) {
+        spans.add(dev.vibris.protocol.v2.ExecutionSpan.newBuilder()
+            .setOperation(operation)
+            .setStartOffsetNs((startedNanos - acceptedNanos).coerceAtLeast(0))
+            .setDurationNs(durationNanos.coerceAtLeast(0))
+            .build())
+    }
+
+    fun <T> measure(operation: String, block: () -> T): T {
+        val start = System.nanoTime()
+        try {
+            return block()
+        } finally {
+            recordSpan(operation, start)
+        }
+    }
+
+    @Synchronized
+    fun executionSpans(): List<dev.vibris.protocol.v2.ExecutionSpan> = spans.toList()
+
     private val ready = CountDownLatch(1)
 
     @Volatile

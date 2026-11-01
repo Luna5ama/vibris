@@ -78,6 +78,12 @@ std::string progress_stage(const proto::JobStage stage) {
             return "checkpointing";
         case proto::JOB_STAGE_COMPARING:
             return "sampling";
+        case proto::JOB_STAGE_RESTORING:
+            return "restoring";
+        case proto::JOB_STAGE_RECOVERING:
+            return "recovering";
+        case proto::JOB_STAGE_GPU_TRACING:
+            return "gpu_tracing";
         case proto::JOB_STAGE_UNSPECIFIED:
             return "loading";
     }
@@ -1012,7 +1018,9 @@ ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const 
     }
     const auto request_id = detail::generate_uuid();
     report_progress(control.progress, request_id, "loading", false);
+    const auto prepare_started = std::chrono::steady_clock::now();
     sources_.prepare(tool_name, arguments, server);
+    const auto prepared_at = std::chrono::steady_clock::now();
     const auto references = sources_.bind_latest(request_id);
     try {
         auto request = JobProtocol::request(tool_name, arguments, config_, context, references, request_id);
@@ -1078,9 +1086,21 @@ ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const 
                 lock.unlock();
             }
             sources_.retire(request_id);
-            return request_failure(
+            // The local registry cancellation only closes its callback. Reattach to the accepted
+            // Core request to retain its real terminal cleanup receipt and completed phase evidence.
+            if (request_accepted->load(std::memory_order_relaxed)) {
+                auto terminal_outcome = SynchronousJobRunner(client_, sources_, config_, std::chrono::seconds(5))
+                    .resume_once(request_id, {});
+                if (auto* failure = std::get_if<ToolFailure>(&terminal_outcome);
+                    failure != nullptr && failure->details.contains("execution_spans")) return terminal_outcome;
+                if (std::holds_alternative<Json>(terminal_outcome)) return terminal_outcome;
+            }
+            auto failure = request_failure(
                 {"CANCELLED", "The Vibris profile workflow was cancelled.", false}, request_id,
                 request_accepted->load(std::memory_order_relaxed));
+            failure.details["native_timings"] = {{"source_prepare_and_delivery_ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(prepared_at - prepare_started).count()}};
+            return failure;
         }
         if (!state->done) {
             lock.unlock();
@@ -1114,7 +1134,14 @@ ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const 
         if (!terminal) throw std::logic_error("gRPC completed without a terminal job message");
         report_progress(control.progress, request_id, "checkpointing", false);
         auto outcome = JobProtocol::terminal(*terminal);
-        if (auto* result = std::get_if<Json>(&outcome)) ResultMapper::finalize_provenance(*result);
+        const auto received_at = std::chrono::steady_clock::now();
+        const auto native_timings = Json{
+            {"source_prepare_and_delivery_ms", std::chrono::duration_cast<std::chrono::milliseconds>(prepared_at - prepare_started).count()},
+            {"submit_to_terminal_ms", std::chrono::duration_cast<std::chrono::milliseconds>(received_at - prepared_at).count()}};
+        if (auto* result = std::get_if<Json>(&outcome)) {
+            ResultMapper::finalize_provenance(*result);
+            (*result)["result"]["timings"]["native"] = native_timings;
+        } else std::get<ToolFailure>(outcome).details["native_timings"] = native_timings;
         if (const auto* failure = std::get_if<ToolFailure>(&outcome);
             failure != nullptr &&
             (failure->code == "server_restarted" || failure->code == "SERVER_RESTARTED") &&

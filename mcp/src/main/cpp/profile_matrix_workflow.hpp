@@ -46,6 +46,8 @@ public:
     [[nodiscard]] ToolOutcome control(const Json& arguments);
     [[nodiscard]] Json active_status() const;
     [[nodiscard]] bool running() const;
+    // Stops client observers only; accepted GPU work retains its existing lifecycle.
+    void interrupt_waits();
     void shutdown();
 
 private:
@@ -83,6 +85,7 @@ private:
     mutable std::mutex wait_mutex_;
     mutable std::condition_variable state_changed_;
     mutable std::atomic<std::uint64_t> state_generation_{0};
+    std::atomic<bool> waits_interrupted_{false};
     mutable std::mutex worker_mutex_;
     std::jthread worker_;
     std::string active_job_id_;

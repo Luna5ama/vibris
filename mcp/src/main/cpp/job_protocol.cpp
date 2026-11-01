@@ -591,18 +591,10 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     job->mutable_context()->CopyFrom(context);
     job->mutable_context()->set_fov(config.fov);
     const auto restore = arguments.find("restore_state");
-    const auto recipe = arguments.value("recipe", std::string{});
-    const auto motion_actions = arguments.find("actions");
-    const bool camera_motion = motion_actions != arguments.end() && motion_actions->is_array() &&
-        std::any_of(motion_actions->begin(), motion_actions->end(), [](const Json& action) {
-            return action.value("type", std::string{}) == "camera_motion";
-        });
-    const bool forced_restore = camera_motion || (tool_name == "vibris_run_recipe" &&
-        (recipe == "profile_matrix" || recipe == "benchmark_ab" || recipe == "compile_validate"));
     job->mutable_restore_state()->set_on_success(
-        forced_restore || (restore != arguments.end() && restore->value("on_success", false)));
+        restore != arguments.end() && restore->value("on_success", false));
     job->mutable_restore_state()->set_on_error(
-        camera_motion || restore == arguments.end() || restore->value("on_error", true));
+        restore != arguments.end() && restore->value("on_error", false));
     configure_result_artifacts(arguments, *job->mutable_result_artifacts());
     for (const auto& source : sources) job->add_sources()->CopyFrom(source);
 
@@ -640,7 +632,8 @@ ToolOutcome JobProtocol::terminal(const proto::ServerMessage& message) {
         Json details{{"job_id", failed.job_id()}, {"request_id", failed.request_id()},
             {"artifacts", mapped.value("artifacts", Json::array())},
             {"action_receipts", mapped.value("action_receipts", Json::array())},
-            {"prelude_receipts", mapped.value("prelude_receipts", Json::array())}};
+            {"prelude_receipts", mapped.value("prelude_receipts", Json::array())},
+            {"execution_spans", mapped.value("execution_spans", Json::array())}};
         if (mapped.contains("restoration")) details["restoration"] = mapped.at("restoration");
         for (const auto& [key, value] : failed.error().details()) details[key] = value;
         return ToolFailure{

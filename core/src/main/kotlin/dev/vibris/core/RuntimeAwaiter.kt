@@ -30,6 +30,7 @@ internal class RuntimeAwaiter(private val probe: CoreProbe) {
                     .setAcceptedAtUnixMs(job.acceptedAtUnixMs)
                     .setStartedAtUnixMs(startedAtUnixMs)
                     .setCompletedAtUnixMs(completedAtUnixMs)
+                    .addAllExecutionSpans(job.executionSpans())
                     .setQueueMs(queueMs)
                     .setExecutionMs(executionMs)
                     .setTotalMs(Math.addExact(queueMs, executionMs)),

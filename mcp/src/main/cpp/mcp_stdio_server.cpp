@@ -2,6 +2,8 @@
 #include "native_metrics.hpp"
 
 #include <string>
+#include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -64,8 +66,9 @@ bool valid_params(const Json& request) {
 
 } // namespace
 
-McpStdioServer::McpStdioServer(std::istream& input, std::ostream& output, const ToolRegistry& tools) noexcept
-    : input_(input), output_(output), tools_(tools) {}
+McpStdioServer::McpStdioServer(std::istream& input, std::ostream& output, const ToolRegistry& tools,
+    std::function<void()> on_input_closed) noexcept
+    : on_input_closed_(std::move(on_input_closed)), input_(input), output_(output), tools_(tools) {}
 
 int McpStdioServer::run() {
     std::string line;
@@ -102,6 +105,9 @@ int McpStdioServer::run() {
         handle_line(line);
         record_native_metrics();
     }
+    if (on_input_closed_) on_input_closed_();
+    for (auto& wait : waits_) wait.get();
+    waits_.clear();
     return 0;
 }
 
@@ -184,11 +190,23 @@ void McpStdioServer::handle_line(std::string_view line) {
             return;
         }
         const auto arguments = params.value("arguments", Json::object());
-        const auto invocation = tools_.invoke(params["name"].get_ref<const std::string&>(), arguments);
-        if (const auto* error = std::get_if<InvocationError>(&invocation)) {
-            write(error_response(id, -32602, error->message.c_str(), error->data));
+        const auto name = params["name"].get<std::string>();
+        if (name == "vibris_job" && arguments.value("operation", Json{}) == "wait") {
+            std::erase_if(waits_, [](auto& wait) {
+                if (wait.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+                wait.get();
+                return true;
+            });
+            if (waits_.size() >= 8) {
+                write(error_response(id, -32000, "Too many concurrent job waits.",
+                    {{"code", "WAIT_CAPACITY"}, {"retryable", true}}));
+                return;
+            }
+            waits_.push_back(std::async(std::launch::async, [this, id, name, arguments] {
+                invoke(id, name, arguments);
+            }));
         } else {
-            write(result_response(id, std::get<Json>(invocation)));
+            invoke(id, name, arguments);
         }
         return;
     }
@@ -196,7 +214,17 @@ void McpStdioServer::handle_line(std::string_view line) {
     write(error_response(id, -32601, "Method not found"));
 }
 
+void McpStdioServer::invoke(const Json& id, const std::string& name, const Json& arguments) {
+    const auto invocation = tools_.invoke(name, arguments);
+    if (const auto* error = std::get_if<InvocationError>(&invocation)) {
+        write(error_response(id, -32602, error->message.c_str(), error->data));
+    } else {
+        write(result_response(id, std::get<Json>(invocation)));
+    }
+}
+
 void McpStdioServer::write(const Json& message) {
+    std::scoped_lock lock(output_mutex_);
     output_ << message.dump() << '\n';
     output_.flush();
 }

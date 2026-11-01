@@ -72,7 +72,7 @@ void strict_v2_request_contains_typed_texture_and_buffer_actions() {
 		"JobProtocol did not emit a strict v2 submit envelope");
 	const auto& job = request.submit_job().job();
 	require(job.job_id() == request_id && job.has_action_sequence() &&
-		!job.restore_state().on_success() && job.restore_state().on_error(),
+		!job.restore_state().on_success() && !job.restore_state().on_error(),
 		"strict v2 job identity or restoration policy is missing");
 	require(job.action_sequence().actions(0).has_load_shader() &&
 		job.action_sequence().actions(0).prelude(),
@@ -96,7 +96,7 @@ void ordinary_actions_preserve_the_final_runtime_state_by_default() {
 	const auto request = JobProtocol::request(
 		"vibris_run_actions", arguments, config(), scene(), {}, std::string(request_id));
 	const auto& restore = request.submit_job().job().restore_state();
-	require(!restore.on_success() && restore.on_error(),
+	require(!restore.on_success() && !restore.on_error(),
 		"ordinary jobs did not preserve the final runtime state by default");
 }
 
@@ -361,8 +361,8 @@ void compile_validation_uses_typed_uuid_cases_without_render_actions() {
 		"compile_validate used logical labels instead of prepared source UUIDs");
 	require(job.compile_validation().cases(0).config().values().at("QUALITY") == "2" &&
 		job.compile_validation().baseline().config().values().at("QUALITY") == "1" &&
-		job.restore_state().on_success() && job.restore_state().on_error(),
-		"compile_validate lost typed configs or mandatory restoration");
+		!job.restore_state().on_success() && !job.restore_state().on_error(),
+		"compile_validate lost typed configs or unexpectedly enabled restoration");
 
 	proto::ServerMessage completed;
 	auto* terminal = completed.mutable_job_completed();
@@ -396,6 +396,10 @@ void recovery_request_has_no_scene_or_source_dependency() {
 	value->set_request_id(std::string(request_id));
 	value->mutable_error()->set_code(proto::ERROR_CODE_RECOVERY_FAILED);
 	value->mutable_error()->set_message("manual repair required");
+    auto* span = value->add_execution_spans();
+    span->set_operation("scene.apply");
+    span->set_start_offset_ns(100);
+    span->set_duration_ns(200);
 	value->mutable_restoration()->set_status(proto::RECEIPT_STATUS_FAILED);
 	value->mutable_restoration()->set_expected_source_uuid("safe-source");
 	auto* prelude = value->add_prelude_receipts();
@@ -412,6 +416,7 @@ void recovery_request_has_no_scene_or_source_dependency() {
 	const auto* error = std::get_if<ToolFailure>(&outcome);
 	require(error != nullptr && error->details.contains("restoration") &&
 		error->details.at("restoration").at("expected_source_uuid") == "safe-source" &&
+        error->details.at("execution_spans").at(0).at("duration_ns") == 200 &&
 		error->details.at("prelude_receipts").size() == 1 &&
 		error->details.at("action_receipts").size() == 1 &&
 		error->details.at("action_receipts").at(0).at("action_index") == 0,
@@ -419,13 +424,17 @@ void recovery_request_has_no_scene_or_source_dependency() {
 }
 
 void explicit_restore_policy_is_not_overridden() {
-	const Json arguments{{"actions", Json::array()},
-		{"restore_state", {{"on_success", false}, {"on_error", false}}}};
-	const auto request = JobProtocol::request("vibris_run_actions", arguments,
-		config(), scene(), {}, std::string(request_id));
-	const auto& restore = request.submit_job().job().restore_state();
-	require(!restore.on_success() && !restore.on_error(),
-		"explicit restore_state policy was replaced by hard-coded defaults");
+	for (const bool success : {false, true}) {
+		for (const bool error : {false, true}) {
+			const Json arguments{{"actions", Json::array()},
+				{"restore_state", {{"on_success", success}, {"on_error", error}}}};
+			const auto request = JobProtocol::request("vibris_run_actions", arguments,
+				config(), scene(), {}, std::string(request_id));
+			const auto& restore = request.submit_job().job().restore_state();
+			require(restore.on_success() == success && restore.on_error() == error,
+				"explicit restore_state policy was replaced by hard-coded defaults");
+		}
+	}
 }
 
 void round_robin_queue_window_is_bounded_but_not_one_turn() {
@@ -506,7 +515,7 @@ void resume_registration_and_terminal_mapping_are_strict_v2() {
 		"strict-v2 terminal failure mapping lost request identity or retryability");
 }
 
-void camera_motion_is_typed_and_forces_transactional_restoration() {
+void camera_motion_is_typed_without_global_restoration() {
     const Json arguments{{"actions", Json::array({{
         {"type", "camera_motion"}, {"artifact_prefix", "turn"},
         {"keyframes", Json::array({
@@ -524,15 +533,15 @@ void camera_motion_is_typed_and_forces_transactional_restoration() {
         "camera trajectory fields or default warmup changed");
     require(motion.keyframes(1).x_delta()==2.0 && motion.keyframes(1).y_delta()==1.0 && motion.keyframes(1).z_delta()==-2.0,
         "camera XYZ fields lost in protocol mapping");
-    require(job.restore_state().on_success() && job.restore_state().on_error(),
-        "camera motion did not force full restoration");
+    require(!job.restore_state().on_success() && !job.restore_state().on_error(),
+        "camera motion unexpectedly enabled global restoration");
 }
 
 } // namespace
 
 int main() {
 	try {
-		camera_motion_is_typed_and_forces_transactional_restoration();
+		camera_motion_is_typed_without_global_restoration();
 		strict_v2_request_contains_typed_texture_and_buffer_actions();
 		ordinary_actions_preserve_the_final_runtime_state_by_default();
 		explicit_load_action_uses_declared_v2_ids();

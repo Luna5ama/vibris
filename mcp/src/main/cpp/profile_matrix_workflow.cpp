@@ -432,7 +432,7 @@ Json profile_matrix_steps(const Json& arguments, std::string_view job_id) {
 				{"__vibris_config_id", config_id}, {"__vibris_workflow_id", job_id},
 				{"__vibris_result_kind", "profile_matrix"}};
 			for (const auto* field : {"warmup_frames", "result_detail", "metric_filter", "statistics",
-				"converted_units", "max_retries", "result_csv", "preset_id", "__vibris_scene_context",
+				"converted_units", "max_retries", "result_csv", "preset_id", "restore_state", "__vibris_scene_context",
 				"__vibris_preset"}) {
 				if (arguments.contains(field)) nested[field] = arguments.at(field);
 			}
@@ -485,7 +485,7 @@ Json compile_validation_steps(const Json& arguments, std::string_view job_id) {
 				{"__vibris_config_id", config_id}, {"__vibris_workflow_id", job_id},
 				{"__vibris_result_kind", "compile_validate"}};
 			for (const auto* field : {"baseline", "baseline_config", "result_csv", "converted_units",
-				"preset_id", "__vibris_scene_context", "__vibris_preset"}) {
+				"preset_id", "restore_state", "__vibris_scene_context", "__vibris_preset"}) {
 				if (arguments.contains(field)) nested[field] = arguments.at(field);
 			}
 			if (config.contains("values")) nested["config"] = config.at("values");
@@ -662,7 +662,10 @@ DurableJobWorkflow::Record DurableJobWorkflow::create_record(
 	const auto execution_mode = supplied_arguments.value("execution", std::string("sync"));
 	auto arguments = supplied_arguments;
 	arguments.erase("execution");
+	const auto prepare_started = std::chrono::steady_clock::now();
 	arguments = freeze_arguments(workspace_root_, state_directory_, job_id, std::move(arguments));
+	const auto freeze_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - prepare_started).count();
 	auto steps = plan_steps(tool_name, arguments, job_id, config.default_warmup_frames);
 	for (auto& step : steps) step["arguments"]["__vibris_workflow_id"] = job_id;
 	if (steps.empty() || steps.size() > maximum_steps) {
@@ -674,6 +677,7 @@ DurableJobWorkflow::Record DurableJobWorkflow::create_record(
 	Json request{{"schema_version", durable_schema_version}, {"workspace_id", workspace_id_}, {"job_id", job_id},
 		{"kind", arguments.value("recipe", std::string(tool_name))}, {"tool_name", tool_name},
 		{"created_unix_ms", created}, {"config", stored_config(config)},
+		{"preparation_timings", {{"source_freeze_ms", freeze_ms}}},
 		{"arguments", std::move(arguments)}, {"steps", std::move(steps)}};
 	Json state{{"schema_version", durable_schema_version}, {"workspace_id", workspace_id_}, {"job_id", job_id},
 		{"kind", request.at("kind")}, {"workflow_state", "queued"}, {"stage", "queued"},
@@ -769,6 +773,7 @@ void DurableJobWorkflow::append_event(Json& state, std::string_view type, std::s
 
 Json DurableJobWorkflow::events(std::string_view job_id, const std::uint64_t cursor) const {
 	Json result = Json::array();
+	if (cursor == std::numeric_limits<std::uint64_t>::max()) return result;
 	const auto path = state_directory_ / std::string(job_id) / "events.jsonl";
 	std::error_code error;
 	if (!fs::exists(path, error)) return result;
@@ -783,6 +788,7 @@ Json DurableJobWorkflow::events(std::string_view job_id, const std::uint64_t cur
 		if (sequence <= previous) invalid_job();
 		previous = sequence;
 		if (sequence > cursor) result.push_back(std::move(event));
+		if (result.size() >= 128) break;
 	}
 	return result;
 }
@@ -939,6 +945,9 @@ Json DurableJobWorkflow::final_result(const Record& record) const {
 			success = success && value.value("success", true);
 			for (auto item : value.value("cases", Json::array())) {
 				item["preset_id"] = request.at("steps")[index].at("arguments").value("preset_id", std::string{});
+				if (value.contains("timings")) item["timings"] = value.at("timings");
+				item["core_request_id"] = value.value("request_id", std::string{});
+				item["result_manifest_id"] = value.value("result_manifest_id", std::string{});
 				cases.push_back(std::move(item));
 			}
 			for (const auto& item : value.value("artifacts", Json::array())) artifacts.push_back(item);
@@ -984,9 +993,18 @@ Json DurableJobWorkflow::snapshot(
 		{"progress", {{"completed_steps", state.at("completed_steps")}, {"total_steps", state.at("total_steps")},
 			{"current_step", state.at("current_step")}, {"eta_ms", state.at("eta_ms")}}},
 		{"current_request_id", state.at("current_request_id")},
+		{"events_path", (state_directory_ / state.at("job_id").get<std::string>() / "events.jsonl").string()},
 		{"current_request_accepted", state.at("current_request_accepted")},
+		{"preparation_timings", record.request.value("preparation_timings", Json::object())},
 		{"last_error", state.at("last_error")}, {"event_cursor", state.at("event_sequence")},
 		{"events", events(state.at("job_id").get<std::string>(), event_cursor)}};
+	const auto tail = state.at("event_sequence").get<std::uint64_t>();
+	const bool observed = event_cursor != std::numeric_limits<std::uint64_t>::max();
+	const auto next_cursor = !result["events"].empty()
+		? result["events"].back().at("sequence").get<std::uint64_t>() : (observed ? event_cursor : tail);
+	result["event_cursor"] = next_cursor;
+	result["event_tail_cursor"] = tail;
+	result["event_has_more"] = observed && next_cursor < tail;
 	if (include_result && (workflow_state == "completed" || workflow_state == "failed")) {
 		result["full_result_path"] = (state_directory_ / state.at("job_id").get<std::string>() / "result.json").string();
 		auto durable_result = Json::parse(read_file(
@@ -997,7 +1015,7 @@ Json DurableJobWorkflow::snapshot(
 	if (workflow_state == "queued" || workflow_state == "running") {
 		result["next_action"] = {{"tool", "vibris_job"},
 			{"arguments", {{"worktree_root", workspace_root_.string()}, {"operation", "wait"},
-				{"job_id", state.at("job_id")}, {"timeout_ms", 300'000}}},
+				{"job_id", state.at("job_id")}, {"timeout_ms", 240'000}}},
 			{"instruction", "Call this blocking wait once. Never poll with query or shell sleep."}};
 	} else if ((workflow_state == "paused" || workflow_state == "cancelled") && result.at("resumable").get<bool>()) {
 		result["next_action"] = {{"tool", "vibris_job"},
@@ -1033,14 +1051,19 @@ ToolOutcome DurableJobWorkflow::start(
 	return begin(job_id, arguments.value("execution", std::string("sync")) == "async");
 }
 
+void DurableJobWorkflow::interrupt_waits() {
+	waits_interrupted_.store(true, std::memory_order_release);
+	state_changed_.notify_all();
+}
+
 ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 	reap_finished();
 	const auto operation = arguments.at("operation").get<std::string>();
 	const auto job_id = arguments.at("job_id").get<std::string>();
-	const auto cursor = arguments.value("event_cursor", std::uint64_t{});
+	const auto cursor = arguments.value("event_cursor", std::numeric_limits<std::uint64_t>::max());
 	if (operation == "query") return snapshot(load(job_id), cursor, false);
 	if (operation == "wait") {
-		const auto timeout = std::chrono::milliseconds(arguments.value("timeout_ms", 300'000));
+		const auto timeout = std::chrono::milliseconds(std::min(arguments.value("timeout_ms", 240'000), 240'000));
 		const auto deadline = std::chrono::steady_clock::now() + timeout;
 		while (true) {
 			const auto observed_generation = state_generation_.load(std::memory_order_acquire);
@@ -1052,6 +1075,13 @@ ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 				value["wait_timed_out"] = false;
 				return value;
 			}
+			if (waits_interrupted_.load(std::memory_order_acquire)) {
+				auto value = snapshot(record, cursor, false);
+				if (!arguments.contains("event_cursor")) value.erase("events");
+				value["wait_interrupted"] = true;
+				value["wait_timed_out"] = false;
+				return value;
+			}
 			if (std::chrono::steady_clock::now() >= deadline) {
 				auto value = snapshot(record, cursor, false);
 				if (!arguments.contains("event_cursor")) value.erase("events");
@@ -1060,7 +1090,8 @@ ToolOutcome DurableJobWorkflow::control(const Json& arguments) {
 			}
 			std::unique_lock lock(wait_mutex_);
 			state_changed_.wait_until(lock, deadline, [&] {
-				return state_generation_.load(std::memory_order_acquire) != observed_generation;
+				return waits_interrupted_.load(std::memory_order_acquire) ||
+					state_generation_.load(std::memory_order_acquire) != observed_generation;
 			});
 		}
 	}

@@ -117,9 +117,6 @@ internal class CaptureProgramBuilder(private val maxActions: Int = DEFAULT_MAX_A
                 }
                 action.hasCameraMotion() -> {
                     flushAll()
-                    if (!job.submission.restoreState.onSuccess || !job.submission.restoreState.onError) {
-                        throw invalid("Camera motion requires restoration on success and error.")
-                    }
                     val motion = try { CameraMotionProtocol.toApi(action.cameraMotion) }
                     catch (failure: IllegalArgumentException) { throw invalid(failure.message ?: "Invalid camera motion.") }
                     (0 until motion.frameCount()).forEach { requireUnique(artifactNames, motion.artifactName(it)) }

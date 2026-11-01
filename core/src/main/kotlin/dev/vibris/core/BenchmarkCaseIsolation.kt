@@ -68,21 +68,21 @@ internal class BenchmarkCaseIsolation private constructor(
             shaderSettings: EffectiveShaderSettings?,
             scene: SceneContext?,
         ): BenchmarkCaseIsolation {
-            val forced = when (job.submission.workloadCase) {
+            val workloadMutates = when (job.submission.workloadCase) {
                 JobSpec.WorkloadCase.BENCHMARK,
                 JobSpec.WorkloadCase.MATRIX,
                 JobSpec.WorkloadCase.COMPILE_VALIDATION,
                 -> true
                 else -> false
             }
-            val changesSourceSettingsOrScene = forced || job.submission.actionSequence.actionsList.any { action ->
+            val changesSourceSettingsOrScene = workloadMutates || job.submission.actionSequence.actionsList.any { action ->
                 action.hasActivateSource() || action.hasLoadShader() || action.hasCameraMotion()
             }
             val mutates = changesSourceSettingsOrScene || job.submission.actionSequence.actionsList.any { action ->
                 action.hasResetTemporalState()
             }
-            val restoreOnSuccess = forced || job.submission.restoreState.onSuccess
-            val restoreOnError = forced || job.submission.restoreState.onError
+            val restoreOnSuccess = job.submission.restoreState.onSuccess
+            val restoreOnError = job.submission.restoreState.onError
             val source = try {
                 activator.retainActive()
             } catch (failure: SourceActivator.Failure) {

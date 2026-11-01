@@ -8,7 +8,7 @@ plugins {
 }
 
 val minecraftVersion = "1.21.11"
-val irisVersion = "1.10.6-vibris.2+mc1.21.11"
+val irisVersion = providers.gradleProperty("vibris.irisVersion").get()
 
 repositories {
     mavenLocal()
@@ -37,7 +37,7 @@ dependencies {
     modImplementation("net.fabricmc:fabric-loader:0.18.1")
     modImplementation("net.fabricmc.fabric-api:fabric-command-api-v2:2.2.20+78d798af4f")
     modImplementation("net.fabricmc.fabric-api:fabric-key-binding-api-v1:1.1.7+4fc5413f3e")
-    modCompileOnly("net.irisshaders:common:$irisVersion")
+    compileOnly("net.irisshaders:common:$irisVersion") { targetConfiguration = "namedElements" }
     modImplementation(files(rootProject.file("../Iris/custom_sodium/sodium-fabric-0.8.6-SNAPSHOT+mc1.21.11-local.jar")))
 
     implementation(project(":vibris-mod-common"))
@@ -82,8 +82,9 @@ loom {
 
 tasks.processResources {
     inputs.property("version", project.version)
+    inputs.property("irisVersion", irisVersion)
     filesMatching("fabric.mod.json") {
-        expand(mapOf("version" to project.version))
+        expand(mapOf("version" to project.version, "irisVersion" to irisVersion))
     }
 }
 

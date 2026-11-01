@@ -1,4 +1,9 @@
 #include "tool_registry.hpp"
+#include "mcp_stdio_server.hpp"
+#include <sstream>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 #include "result_mapper.hpp"
 #include "artifact_prune.hpp"
 
@@ -115,6 +120,19 @@ void exact_v2_tool_catalog() {
 void exact_filters_and_job_control() {
     const ToolRegistry registry([](std::string_view, const Json& arguments) { return arguments; });
     const Json scope{{"worktree_root", "I:\\shader-worktree"}};
+    const auto& ms = definition(registry, "vibris_run_matrix").at("inputSchema").at("properties");
+    require(ms.contains("preset_id") && ms.contains("presets"), "matrix scene selectors missing");
+    Json m{{"worktree_root", "I:\\shader-worktree"}, {"sources", Json::array({{{"id", "s"}, {"kind", "workspace"}}})},
+        {"configs", Json::array({{{"id", "c"}, {"values", Json::object()}}})},
+        {"matrix", {{"sources", Json::array({"s"})}, {"configs", Json::array({"c"})}}},
+        {"actions", Json::array({{{"type", "wait_frames"}, {"frames", 1}}})}};
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", m)), "matrix accepted no scene");
+    m["preset_id"] = "scene";
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", m)), "matrix rejected preset_id");
+    m["presets"] = Json::array({"scene", "scene2"});
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", m)), "matrix accepted both selectors");
+    m.erase("preset_id");
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", m)), "matrix rejected presets");
 
     auto status = scope;
     status["wait_until"] = "can_accept_job";
@@ -184,8 +202,7 @@ void exact_filters_and_job_control() {
     benchmark["frames"] = 4;
     benchmark["restore_state"] = {{"on_success", false}, {"on_error", false}};
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_recipe", benchmark)),
-        "always-restored benchmark accepted a disabled restore policy");
-    benchmark.erase("restore_state");
+        "benchmark accepted missing mandatory metric guards");
     benchmark["metrics"] = Json::array({
         {{"metric_id", "target"}, {"role", "target"}},
         {{"metric_id", "sibling"}, {"role", "sibling"}, {"max_regression_ratio", 0.03}},
@@ -332,8 +349,8 @@ void compile_validation_shape_is_strict_and_typed() {
 
     auto invalid = single;
     invalid["restore_state"] = {{"on_success", false}, {"on_error", false}};
-    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_recipe", invalid)),
-        "compile_validate accepted caller-controlled restoration");
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_recipe", invalid)),
+        "compile_validate rejected explicit no-restoration policy");
     invalid = single;
     invalid["frames"] = 4;
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_recipe", invalid)),
@@ -392,6 +409,11 @@ void agent_projection_preserves_full_results() {
     const auto required = resource.value("required", Json::array());
     require(std::find(required.begin(), required.end(), "view") == required.end(),
         "flattened action schema incorrectly requires a texture view for buffer dumps");
+    const auto action_forms = definition(registry, "vibris_run_actions").at("inputSchema")
+        .at("properties").at("actions").at("items").at("description").get<std::string>();
+    require(action_forms.find("dump_texture: required") != std::string::npos &&
+        action_forms.find("resource requires [\"logical_name\",\"view\"]") != std::string::npos,
+        "tools/list concealed conditional texture selector requirements");
     std::ifstream stream(std::filesystem::path(__FILE__).parent_path() / "alpha_piscium_result.json");
     require(stream.good(), "missing Alpha Piscium fixture");
     const auto original = Json::parse(stream);
@@ -534,8 +556,8 @@ void bounded_camera_motion_schema_and_restore_policy() {
         "duplicate frame offsets were accepted");
     invalid = arguments;
     invalid["restore_state"] = {{"on_success", false}, {"on_error", true}};
-    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
-        "camera action accepted disabled success restoration");
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_actions", invalid)),
+        "camera action required global success restoration");
     invalid = arguments;
     invalid["actions"][0]["keyframes"][0]["yaw_delta_degrees"] = 10;
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", invalid)),
@@ -544,8 +566,135 @@ void bounded_camera_motion_schema_and_restore_policy() {
 
 } // namespace
 
+void stdio_wait_does_not_block_control() {
+    std::mutex mutex;
+    std::condition_variable changed;
+    int waiting = 0;
+    bool released = false;
+    const ToolRegistry registry([&](std::string_view name, const Json&) -> vibris::mcp::ToolOutcome {
+        std::unique_lock lock(mutex);
+        if (name == "vibris_job") {
+            ++waiting;
+            changed.notify_all();
+            if (!changed.wait_for(lock, std::chrono::seconds(2), [&] { return released; })) {
+                throw std::runtime_error("control request was blocked by wait");
+            }
+        } else {
+            require(changed.wait_for(lock, std::chrono::seconds(2), [&] { return waiting == 8; }),
+                "wait requests did not reach the dispatcher");
+            released = true;
+            changed.notify_all();
+        }
+        return Json{{"ok", true}};
+    });
+    std::ostringstream requests;
+    requests << Json{{"jsonrpc", "2.0"}, {"id", 0}, {"method", "tools/list"}}.dump() << '\n';
+    for (int id = 1; id <= 9; ++id) requests << Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"},
+        {"params", {{"name", "vibris_job"}, {"arguments", {{"worktree_root", "C:/fixture"},
+            {"job_id", "job"}, {"operation", "wait"}, {"timeout_ms", 1000}}}}}}.dump() << '\n';
+    requests << Json{{"jsonrpc", "2.0"}, {"id", 10}, {"method", "tools/call"},
+        {"params", {{"name", "vibris_get_status"}, {"arguments", {{"worktree_root", "C:/fixture"}}}}}}.dump() << '\n';
+    std::istringstream input(requests.str());
+    std::ostringstream output;
+    vibris::mcp::McpStdioServer server(input, output, registry);
+    require(server.run() == 0, "stdio server failed");
+    std::istringstream responses(output.str());
+    std::string line;
+    std::unordered_set<int> ids;
+    while (std::getline(responses, line)) {
+        auto response = Json::parse(line);
+        const int id = response.at("id").get<int>();
+        if (id == 9) require(response.at("error").at("data").at("code") == "WAIT_CAPACITY",
+            "wait capacity was not bounded");
+        else require(!response.contains("error"), "stdio dispatch returned an error");
+        if (id == 0) require(response.at("result").at("tools").is_array(), "tools/list failed");
+        require(ids.insert(id).second, "duplicate response ID");
+    }
+    require(ids == std::unordered_set<int>({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}), "EOF lost pending wait responses");
+}
+
+void stdio_eof_interrupts_observers() {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool closed = false;
+    const ToolRegistry registry([&](std::string_view, const Json&) -> vibris::mcp::ToolOutcome {
+        std::unique_lock lock(mutex);
+        require(changed.wait_for(lock, std::chrono::seconds(2), [&] { return closed; }),
+            "EOF did not interrupt the outstanding observer");
+        return Json{{"wait_interrupted", true}};
+    });
+    std::istringstream input(Json{{"jsonrpc", "2.0"}, {"id", "pending"}, {"method", "tools/call"},
+        {"params", {{"name", "vibris_job"}, {"arguments", {{"worktree_root", "C:/fixture"},
+            {"job_id", "job"}, {"operation", "wait"}, {"timeout_ms", 240000}}}}}}.dump() + "\n");
+    std::ostringstream output;
+    vibris::mcp::McpStdioServer server(input, output, registry, [&] {
+        std::scoped_lock lock(mutex);
+        closed = true;
+        changed.notify_all();
+    });
+    require(server.run() == 0, "EOF observer cleanup failed");
+    const auto response = Json::parse(output.str());
+    require(response.at("id") == "pending" &&
+        response.at("result").at("structuredContent").at("result").at("wait_interrupted") == true,
+        "EOF lost the observer response");
+}
+
+void large_durable_response_references_complete_file() {
+    Json native{{"workflow_state", "completed"}, {"full_result_path", "C:/fixture/result.json"},
+        {"result", {{"kind", "profile_matrix"}, {"completed_cases", 14},
+            {"cases", Json::array({{{"payload", std::string(9 * 1024 * 1024, 'x')}}})}}}};
+    const auto original = native;
+    const auto projected = vibris::mcp::ResultMapper::agent_projection("vibris_job", native, Json::object());
+    require(projected.dump().size() < 4096, "large durable result escaped response budget");
+    require(projected.at("result").at("completed_cases") == 14, "summary lost case count");
+    require(projected.at("full_result_path") == "C:/fixture/result.json", "full result reference lost");
+    require(native == original, "response projection mutated the full result");
+    const Json listing = {{"manifests", Json::array({Json{{"manifest_id", "one"},
+        {"manifest_path", "C:/fixture/manifest.json"}, {"manifest_sha256", "hash"},
+        {"files", Json::array({Json{{"artifact_id", "a"}}, Json{{"artifact_id", "b"}}})}}})}};
+    const auto manifests = vibris::mcp::ResultMapper::agent_projection("vibris_artifacts", listing, {{"operation", "list"}});
+    require(manifests.at("manifests")[0].at("file_count") == 2 &&
+        !manifests.at("manifests")[0].contains("files") &&
+        manifests.at("manifests")[0].at("manifest_path") == "C:/fixture/manifest.json",
+        "artifact summary lost the complete manifest reference");
+    require(vibris::mcp::ResultMapper::agent_projection("vibris_artifacts", listing, {{"operation", "get"}}) == listing,
+        "artifact get lost file details");
+}
+
+void matrix_scene_forms_reach_dispatch() {
+    int dispatched = 0;
+    const ToolRegistry registry([&](std::string_view, const Json& args) { ++dispatched; return args; });
+    const auto& definitions = registry.definitions();
+    const auto found = std::find_if(definitions.begin(), definitions.end(), [](const Json& d) {
+        return d.at("name") == "vibris_run_matrix";
+    });
+    require(found != definitions.end(), "matrix missing from tools/list");
+    const auto& properties = found->at("inputSchema").at("properties");
+    require(properties.contains("preset_id") && properties.contains("presets"), "scene forms not discoverable");
+    Json request{{"worktree_root", "C:/fixture"},
+        {"sources", Json::array({{{"id", "src"}, {"kind", "workspace"}}})},
+        {"configs", Json::array({{{"id", "cfg"}, {"values", Json::object()}}})},
+        {"matrix", {{"sources", Json::array({"src"})}, {"configs", Json::array({"cfg"})}}},
+        {"actions", Json::array({{{"type", "wait_frames"}, {"frames", 1}}})}};
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", request)), "missing scene accepted");
+    request["preset_id"] = "scene";
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", request)), "single scene rejected");
+    request["presets"] = Json::array({"scene", "second"});
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", request)), "ambiguous scenes accepted");
+    request.erase("preset_id");
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", request)), "multiple scenes rejected");
+    request["restore_state"] = {{"on_success", true}, {"on_error", true}};
+    require(properties.contains("restore_state") &&
+        std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", request)), "matrix explicit restoration was not discoverable or dispatchable");
+    require(dispatched == 3, "invalid matrix reached backend");
+}
+
 int main() {
     try {
+        large_durable_response_references_complete_file();
+        stdio_wait_does_not_block_control();
+        stdio_eof_interrupts_observers();
+        matrix_scene_forms_reach_dispatch();
         bounded_camera_motion_schema_and_restore_policy();
         exact_v2_tool_catalog();
         exact_filters_and_job_control();

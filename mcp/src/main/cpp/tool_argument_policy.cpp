@@ -132,12 +132,6 @@ std::optional<InvocationError> validate_argument_policy(std::string_view tool_na
             if (!(*actions)[index].is_object()) continue;
             const auto type = (*actions)[index].value("type", std::string{});
             if (type == "camera_motion") {
-                const auto restore = arguments.find("restore_state");
-                if (restore != arguments.end() &&
-                    (!restore->value("on_success", true) || !restore->value("on_error", true))) {
-                    return InvocationError{InvocationErrorCode::InvalidArguments,
-                        "camera_motion requires restoration on success and error"};
-                }
                 const auto& keys = (*actions)[index].at("keyframes");
                 if (keys.size() < 2 || keys.size() > 16 || keys.front().at("frame_offset") != 0 ||
                     keys.front().at("yaw_delta_degrees") != 0 || keys.front().at("pitch_delta_degrees") != 0) {

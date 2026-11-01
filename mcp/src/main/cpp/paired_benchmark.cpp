@@ -123,6 +123,7 @@ Json profile_arguments(const Json& arguments, const PlannedMeasurement& measurem
                 {"__vibris_benchmark_slot", measurement.slot},
                 {"__vibris_benchmark_variant", measurement.variant}};
     if (arguments.contains("config")) result["config"] = arguments.at("config");
+    if (arguments.contains("restore_state")) result["restore_state"] = arguments.at("restore_state");
     Json metric_filter = Json::array();
     for (const auto& metric : arguments.at("metrics")) metric_filter.push_back(metric.at("metric_id"));
     result["metric_filter"] = std::move(metric_filter);
@@ -150,6 +151,7 @@ Json visual_arguments(const Json& arguments, std::size_t default_warmup_frames) 
                 {"captures", Json::array({{{"type", "screenshot"}, {"format", "png"}}})},
                 {"visual_thresholds", std::move(thresholds)}};
     if (arguments.contains("config")) result["config"] = arguments.at("config");
+    if (arguments.contains("restore_state")) result["restore_state"] = arguments.at("restore_state");
     if (arguments.contains("__vibris_preset")) {
         result["__vibris_preset"] = arguments.at("__vibris_preset");
     }

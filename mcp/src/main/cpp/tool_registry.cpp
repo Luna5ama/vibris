@@ -455,7 +455,8 @@ Json build_definitions() {
                    "benchmark_ab requires typed target, sibling, and sentinel metrics, repeated ABBA, ABAB, or "
                    "seeded randomized profiles, same-source controls, and deterministic visual thresholds; it "
                    "accepts only stable target improvements after compile, provenance, restoration, statistical, "
-                   "guardrail, and visual gates pass. "
+                   "guardrail, and visual gates pass. Jobs keep their final world and shader on success, failure, "
+                   "and cancellation unless restore_state explicitly requests restoration. "
                    "recover_runtime is the only recipe without a preset or source; it reapplies and verifies the "
                    "retained safe snapshot after a transactional restore failure.",
                    recipe_schema(), false),
@@ -466,8 +467,8 @@ Json build_definitions() {
                    "preset. An async result's next_action is one blocking vibris_job operation=wait call; never poll. "
                    "Put related multi-image exports into one ordered action sequence instead of waiting for "
                    "an idle lease between images. restore_state defaults to preserve the final source/config on "
-                   "success and restore the previous state on error; an "
-                   "explicit false/false load may establish the first verified Core-owned runtime snapshot.",
+                   "success, failure, and cancellation. "
+                   "Explicit restore_state can request a return to the previous state.",
                    scoped(closed_object({{"sources", named_sources_schema()},
                                          {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}},
                                              {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
@@ -486,14 +487,17 @@ Json build_definitions() {
                    "Each combination "
                    "automatically begins with load_shader; do not include load_shader in the action template.",
                    scoped(closed_object({{"sources", named_sources_schema()},
+                                         {"preset_id", {{"type", "string"}, {"minLength", 1}}},
+                                         {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}}, {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
                                          {"configs", named_configs_schema()},
                                          {"matrix", matrix_axes_schema()},
+                                         {"restore_state", restore_policy_schema()},
                                          {"execution", enum_string({"sync", "async"})},
                                          {"actions", {{"type", "array"}, {"items", action_schema()}, {"maxItems", 64}}}},
                                         {"sources", "configs", "matrix", "actions"}), false), false),
         definition("vibris_job",
                    "Wait for, inspect, retrieve, cancel or resume one durable v2 job for the explicit Git worktree. "
-                   "For an async job, call operation=wait once with timeout_ms=300000; if that bounded wait times out, "
+                   "For an async job, call operation=wait once with timeout_ms=240000; waits are capped at 240 seconds to leave transport deadline headroom; if that bounded wait times out, "
                    "call wait again. Never poll with query, repeated tool calls, Start-Sleep, or shell sleep. "
                    "query is only for a one-time diagnostic snapshot. "
                    "DURABLE_WORKFLOW_BUSY describes one local MCP workflow worker, not the Core runtime lease or "
@@ -506,7 +510,8 @@ Json build_definitions() {
                        {"reason", {{"type", "string"}, {"maxLength", 512}}},
                    }, {"operation", "job_id"}), false), false),
         definition("vibris_artifacts",
-                   "List, inspect, measure capacity for, or delete managed v2 artifact manifests in the explicit Git worktree.",
+                   "List manifest summaries, inspect, measure capacity for, or delete managed v2 artifacts in the explicit Git worktree. "
+                   "List retains complete manifest_path and SHA references; operation=get returns one full manifest with files.",
                    scoped(closed_object({
                        {"operation", enum_string({"list", "get", "capacity", "delete", "prune"})},
                        {"older_than_ms", bounded_integer(0, std::numeric_limits<std::uint64_t>::max())},
@@ -525,7 +530,7 @@ Json build_definitions() {
             "relMSE is squared difference divided by baseline energy. No thresholds means not_evaluated.",
             compare_schema(), true),
         definition("vibris_preview_presets", "Render and cache scene thumbnails for the explicit Git worktree by preset SHA, tile width and Vibris version. "
-            "Uses a frozen workspace source, default settings and restored runtime state. Returns 6x4 contact sheets. "
+            "Uses a frozen workspace source and default settings; leaves the runtime at the final preview scene. Returns 6x4 contact sheets. "
             "Async execution uses the durable job workflow; wait once with vibris_job.",
             scoped(closed_object({{"preset_ids", string_array(512)}, {"tags", string_array(64)},
                 {"refresh", {{"type", "boolean"}}}, {"tile_width", bounded_integer(64, 1024)},
@@ -634,7 +639,16 @@ Json public_schema(Json schema) {
         schema["properties"] = std::move(properties);
         schema["additionalProperties"] = false;
         schema["required"] = std::move(required);
-        if (!tag) schema["description"] = "Exactly one supported form is required; branch-specific fields are mutually exclusive.";
+        std::string forms = "Exactly one supported form is required. ";
+        for (const auto& branch : branches) {
+            if (tag) forms += branch["properties"][*tag]["enum"][0].get<std::string>() + ": ";
+            forms += "required " + branch.value("required", Json::array()).dump() + ". ";
+            for (const auto& [key, field] : branch.at("properties").items()) {
+                if (field.contains("required") && !field["required"].empty())
+                    forms += key + " requires " + field["required"].dump() + ". ";
+            }
+        }
+        schema["description"] = schema.value("description", std::string{}) + forms;
     }
     if (schema.contains("properties")) {
         for (auto& [key, field] : schema["properties"].items()) field = public_schema(std::move(field));
@@ -821,9 +835,6 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
             return "arguments.presets is only allowed for profile_matrix and is exclusive with preset_id";
         if (recipe == "profile") return require({"frames"});
         if (recipe == "compile_validate") {
-            if (arguments.contains("restore_state")) {
-                return "arguments.restore_state is not allowed for always-restored workloads";
-            }
             const bool matrix = arguments.contains("sources") || arguments.contains("configs") ||
                 arguments.contains("matrix");
             if (matrix) {
@@ -836,7 +847,7 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
                 return "arguments.baseline is required when arguments.baseline_config is present";
             }
             constexpr std::array allowed{"recipe", "worktree_root", "preset_id", "source", "config",
-                "baseline", "baseline_config", "sources", "configs", "matrix", "execution",
+                "baseline", "baseline_config", "sources", "configs", "matrix", "execution", "restore_state",
                 "result_csv", "converted_units", "__vibris_case_id", "__vibris_source_id",
                 "__vibris_config_id", "__vibris_workflow_id", "__vibris_result_kind"};
             for (const auto& [key, ignored] : arguments.items()) {
@@ -848,9 +859,6 @@ std::optional<std::string> validate_operation_shape(const std::string_view name,
             return std::nullopt;
         }
         if (recipe == "profile_matrix" || recipe == "benchmark_ab") {
-            if (arguments.contains("restore_state")) {
-                return "arguments.restore_state is not allowed for always-restored workloads";
-            }
             if (recipe == "profile_matrix") {
                 if (arguments.value("rounds", 1) > 10) return "arguments.rounds must be at most 10 for profile_matrix";
                 const auto order = arguments.value("order", std::string("palindrome"));

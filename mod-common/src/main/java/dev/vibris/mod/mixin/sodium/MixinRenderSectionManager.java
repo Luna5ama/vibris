@@ -8,6 +8,7 @@ import net.caffeinemc.mods.sodium.client.render.chunk.TaskQueueType;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.BuilderTaskOutput;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuilder;
 import net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobResult;
+import net.irisshaders.iris.mixinterface.ShadowTerrainState;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -35,11 +36,12 @@ public abstract class MixinRenderSectionManager implements VibrisTerrainQuiescen
 		int running = 0;
 		for (RenderSection section : sectionByPosition.values()) if (section == null || section.getRunningJob() != null) running++;
 		int queued = taskLists.values().stream().mapToInt(ArrayDeque::size).sum();
+		int shadowQueued = ((Object) this instanceof ShadowTerrainState shadow) ? shadow.iris$getPendingShadowTerrainTasks() : 0;
 		boolean ready = !needsGraphUpdate && scheduled == 0 && busy == 0 && buildResults.isEmpty() &&
-			thisFrameBlockingTasks == 0 && nextFrameBlockingTasks == 0 && deferredTasks == 0 && running == 0 && queued == 0;
+			thisFrameBlockingTasks == 0 && nextFrameBlockingTasks == 0 && deferredTasks == 0 && running == 0 && queued == 0 && shadowQueued == 0;
 		String mismatch = ready ? "" : "terrain work is pending: graph_update=" + needsGraphUpdate +
 			", scheduled=" + scheduled + ", busy=" + busy + ", results=" + buildResults.size() +
-			", running=" + running + ", queued=" + queued + ", blocking_now=" + thisFrameBlockingTasks +
+			", running=" + running + ", queued=" + queued + ", shadow_queued=" + shadowQueued + ", blocking_now=" + thisFrameBlockingTasks +
 			", blocking_next=" + nextFrameBlockingTasks + ", deferred=" + deferredTasks;
 		return new TerrainSnapshot(ready, List.of(), List.of(), List.of(), false, List.of(), mismatch);
 	}

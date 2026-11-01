@@ -1,12 +1,22 @@
 package dev.vibris.api
 
+/** Monotonic CPU intervals. Observers must be nonblocking and must not synchronize the GPU. */
+fun interface OperationTiming {
+    fun record(operation: String, startedNanos: Long, durationNanos: Long)
+}
+
 /** Sampling is owned by the active pipeline; an absent pass selects the frame-end boundary. */
 @JvmRecord
 data class TextureAnalysisRequest @JvmOverloads constructor(
     val resource: CapturePlan.ResourceSelector,
     val passId: String? = null,
     val accumulation: TextureAccumulation? = null,
+    val timing: OperationTiming? = null,
 ) {
+    fun recordTiming(operation: String, startedNanos: Long) {
+        timing?.record(operation, startedNanos, (System.nanoTime() - startedNanos).coerceAtLeast(0))
+    }
+
     fun outputPlan(): CapturePlan {
         val options = requireNotNull(accumulation)
         val outputs = ArrayList<CapturePlan.ArtifactOutputSpec>()

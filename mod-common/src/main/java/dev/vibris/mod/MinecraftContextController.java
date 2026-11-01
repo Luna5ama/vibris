@@ -353,7 +353,10 @@ final class MinecraftContextController {
 				if (level == null || player == null) throw new IllegalStateException("Preset dimension is unavailable");
 				applyWeather(level, operation.resolved.tick(), operation.resolved.weather());
 				var camera = operation.resolved.camera();
-				if (!player.teleportTo(
+				boolean cameraChanged = player.level() != level || player.getX() != camera.x() ||
+					player.getY() != camera.y() || player.getZ() != camera.z() ||
+					player.getYRot() != camera.yaw() || player.getXRot() != camera.pitch();
+				if (cameraChanged && !player.teleportTo(
 					level, camera.x(), camera.y(), camera.z(), Set.of(), camera.yaw(), camera.pitch(), true)) {
 					throw new IllegalStateException("Player teleport was rejected");
 				}

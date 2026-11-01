@@ -173,11 +173,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         progress.accept(JobStage.JOB_STAGE_LOADING_WORLD)
         probe.event(job.requestId, "ENSURING_WORLD")
         progress.accept(JobStage.JOB_STAGE_APPLYING_CONTEXT)
-        val context: ContextApplyResult = await(
-            runtime.ensureWorldAndContext(RuntimeJobContext.toApi(job.submission.context), cancellation),
-            job,
-            deadline,
-        )
+        val context: ContextApplyResult = job.measure("scene.apply") {
+            await(runtime.ensureWorldAndContext(RuntimeJobContext.toApi(job.submission.context), cancellation), job, deadline)
+        }
         if (!context.successful) {
             throw Failure(ErrorCode.ERROR_CODE_WORLD_LOAD_FAILED, context.message)
         }
@@ -190,7 +188,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
     fun reset(job: CoreJob, progress: Consumer<JobStage>, deadline: Long) {
         progress.accept(JobStage.JOB_STAGE_RESETTING_TEMPORAL_STATE)
         probe.event(job.requestId, "RESETTING_TEMPORAL_STATE")
-        val reset: TemporalResetResult = await(runtime.resetTemporalState(job.cancellation.token()), job, deadline)
+        val reset: TemporalResetResult = job.measure("temporal.reset") {
+            await(runtime.resetTemporalState(job.cancellation.token()), job, deadline)
+        }
         if (!reset.successful) {
             throw Failure(ErrorCode.ERROR_CODE_INTERNAL, "Runtime temporal state reset failed.")
         }
@@ -205,7 +205,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
     ): Long {
         progress.accept(JobStage.JOB_STAGE_WARMING_UP)
         probe.event(job.requestId, "WARMING_UP")
-        return await(runtime.waitRenderedFrames(frames, job.cancellation.token()), job, deadline)
+        return job.measure("frames.wait") {
+            await(runtime.waitRenderedFrames(frames, job.cancellation.token()), job, deadline)
+        }
     }
 
     fun runtime(): VibrisRuntimeAdapter = runtime
@@ -226,7 +228,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         source: SourceRegistry.Lease,
         progress: Consumer<JobStage>,
         deadline: Long,
-    ): ReloadResult = reuseLoadedPipeline(job, source, null, progress, deadline)
+    ): ReloadResult = reuseLoadedPipeline(job, source, null, progress, deadline)?.reload
         ?: activateSource(job, source, null, progress, deadline)
 
     @Throws(Failure::class)
@@ -238,7 +240,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         deadline: Long,
     ): LoadResult {
         val settings = if (config.preserveCurrent) null else config.valuesMap
-        val reload = reuseLoadedPipeline(job, source, settings, progress, deadline) ?: if (activator.isActive(source)) {
+        val reload = reuseLoadedPipeline(job, source, settings, progress, deadline)?.reload ?: if (activator.isActive(source)) {
             reloadActiveSource(job, source, settings, progress, deadline)
         } else {
             activateSource(job, source, settings, progress, deadline)
@@ -257,11 +259,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         deadline: Long,
     ): CompileResult {
         val settings = if (config.preserveCurrent) null else config.valuesMap
-        reuseLoadedPipeline(job, source, settings, progress, deadline)?.let { reload ->
-            val catalog = await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline)
-            val loadedAtUnixMs = activeShaderLoadedAtUnixMs.takeIf { it > 0 } ?: System.currentTimeMillis()
-            observeCatalog(catalog, loadedAtUnixMs)
-            return CompileResult(reload, catalog, loadedAtUnixMs)
+        reuseLoadedPipeline(job, source, settings, progress, deadline)?.let { reused ->
+            observeCatalog(reused.catalog, reused.loadedAtUnixMs)
+            return reused
         }
         val activation = if (activator.isActive(source)) null else try {
             progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
@@ -367,7 +367,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
     ): ReloadResult {
         progress.accept(JobStage.JOB_STAGE_COMPILING)
         probe.event(job.requestId, "RELOADING_SHADERS")
-        val result = await(runtime.reloadVibrisShaderpack(config, job.cancellation.token()), job, deadline)
+        val result = job.measure("shader.reload") {
+            await(runtime.reloadVibrisShaderpack(config, job.cancellation.token()), job, deadline)
+        }
         if (result.successful) {
             activeShaderSettings = result.effectiveSettings
             activePassMappingSha256 = ""
@@ -382,7 +384,8 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         config: Map<String, String>?,
         progress: Consumer<JobStage>,
         deadline: Long,
-    ): ReloadResult? {
+    ): CompileResult? {
+        val reuseStartedNanos = System.nanoTime()
         if (!activator.ready()) return null
         val current = try {
             activator.activeSnapshot()
@@ -393,6 +396,10 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         if (current.snapshotSha256 != source.snapshotSha256 || !matchesLoadedSettings(settings, config)) {
             return null
         }
+        val liveCatalog = job.measure("shader.generation_check") {
+            await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline)
+        }
+        if (liveCatalog.shaderGeneration != observedCatalogContext.shaderGeneration) return null
         if (!activator.isActive(source)) {
             progress.accept(JobStage.JOB_STAGE_ACTIVATING_SOURCE)
             probe.event(job.requestId, "ACTIVATING_SOURCE")
@@ -410,7 +417,9 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             }
         }
         probe.event(job.requestId, "REUSING_LOADED_SHADER")
-        return ReloadResult.success(settings, emptyList())
+        job.recordSpan("shader.reuse", reuseStartedNanos)
+        return CompileResult(ReloadResult.success(settings, emptyList()), liveCatalog,
+            activeShaderLoadedAtUnixMs.takeIf { it > 0 } ?: System.currentTimeMillis())
     }
 
     private fun matchesLoadedSettings(
@@ -481,6 +490,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         } catch (failure: Failure) {
             throw DeterministicPhaseFailure(DeterministicFailurePhase.LOAD, failure)
         }
+        val restoreContextOnError = job.submission.restoreState.onError
         var phaseAttempted = false
         var activationFinished = false
         var checkpointFinished = false
@@ -526,13 +536,15 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
                 is DeterministicTemporalCaptureOutcome.ContextRejected -> {
                     failurePhase = DeterministicFailurePhase.LOAD
                     activationFinished = true
-                    rollbackRejectedContext(previous, activation)
+                    if (!restoreContextOnError) activeContext = null
+                    rollbackRejectedContext(previous, activation, restoreContextOnError)
                     outcome.failure
                 }
                 is DeterministicTemporalCaptureOutcome.ReloadRejected -> {
                     failurePhase = DeterministicFailurePhase.LOAD
                     activationFinished = true
-                    rollbackRejectedReload(previous, activation, outcome)
+                    activeContext = outcome.context.context.takeIf { outcome.context.successful }
+                    rollbackRejectedReload(previous, activation, outcome, restoreContextOnError)
                     outcome.failure
                 }
                 is DeterministicTemporalCaptureOutcome.PlanningRejected -> {
@@ -567,7 +579,10 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             var terminal = failure
             if (!activationFinished) {
                 if (phaseAttempted) {
-                    terminal = restoreDeterministicSnapshot(previous, activation, failure) ?: failure
+                    if (!restoreContextOnError) activeContext = null
+                    terminal = restoreDeterministicSnapshot(
+                        previous, activation, failure, restoreContextOnError,
+                    ) ?: failure
                 } else if (activation != null && !rollbackActivation(activation)) {
                     terminal = restorationFailure("The previous shader source link could not be restored.")
                     terminal.addSuppressed(failure)
@@ -590,7 +605,10 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             var terminal = mapped
             if (!activationFinished) {
                 if (phaseAttempted) {
-                    terminal = restoreDeterministicSnapshot(previous, activation, mapped) ?: mapped
+                    if (!restoreContextOnError) activeContext = null
+                    terminal = restoreDeterministicSnapshot(
+                        previous, activation, mapped, restoreContextOnError,
+                    ) ?: mapped
                 } else if (activation != null && !rollbackActivation(activation)) {
                     terminal = restorationFailure("The previous shader source link could not be restored.")
                     terminal.addSuppressed(mapped)
@@ -682,11 +700,12 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
     private fun rollbackRejectedContext(
         previous: DeterministicRuntimeSnapshot,
         activation: SourceActivator.Activation?,
+        restoreContext: Boolean,
     ) {
         if (activation != null && !rollbackActivation(activation)) {
             throw restorationFailure("The previous shader source link could not be restored after context rejection.")
         }
-        if (!restorePreviousContext(previous)) {
+        if (restoreContext && !restorePreviousContext(previous)) {
             throw restorationFailure("The previous scene context could not be restored after context rejection.")
         }
         adoptPreviousShaderState(previous)
@@ -697,6 +716,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         previous: DeterministicRuntimeSnapshot,
         activation: SourceActivator.Activation?,
         outcome: DeterministicTemporalCaptureOutcome.ReloadRejected,
+        restoreContext: Boolean,
     ) {
         if (activation != null && !rollbackActivation(activation)) {
             throw restorationFailure("The previous shader source link could not be restored after reload rejection.")
@@ -717,7 +737,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
                 "The previous shader source and settings could not be restored after reload rejection.",
             )
         }
-        if (!restorePreviousContext(previous)) {
+        if (restoreContext && !restorePreviousContext(previous)) {
             throw restorationFailure("The previous scene context could not be restored after reload rejection.")
         }
     }
@@ -739,10 +759,13 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         previous: DeterministicRuntimeSnapshot,
         activation: SourceActivator.Activation?,
         original: Failure,
+        restoreContext: Boolean,
     ): Failure? {
+        // An unacknowledged reload may leave the source link and pipeline inconsistent.
+        // Repair that state even when the caller did not request a return to the previous scene.
         val linkRestored = activation == null || rollbackActivation(activation)
         val shaderRestored = linkRestored && restorePreviousShader(previous)
-        val contextRestored = linkRestored && restorePreviousContext(previous)
+        val contextRestored = !restoreContext || linkRestored && restorePreviousContext(previous)
         if (linkRestored && shaderRestored && contextRestored) return null
         val failure = restorationFailure(
             "The exact runtime state before deterministic capture could not be restored.",
@@ -991,6 +1014,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
         }
         progress.accept(JobStage.JOB_STAGE_RESTORING)
         probe.event(job.requestId, "RESTORING_RUNTIME_STATE")
+        val restoreStarted = System.nanoTime()
         return try {
             val actual = restore(isolation.snapshot)
             isolation.successReceipt(actual, true)
@@ -1022,6 +1046,8 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
                 restoration = receipt,
                 holdOwnership = true,
             )
+        } finally {
+            job.recordSpan("runtime.explicit_restore", restoreStarted)
         }
     }
 

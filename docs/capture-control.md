@@ -83,7 +83,7 @@ Never poll or sleep for a global idle lease. Core accepts multiple jobs from the
 and from different workspaces whenever `can_accept_job=true`, then schedules them by workspace round-robin. A
 `DURABLE_WORKFLOW_BUSY` response is narrower: one durable workflow worker is already active in that MCP process for
 the worktree. It is not a Core queue rejection. Wait for the returned job with one
-`vibris_job(operation=wait, timeout_ms=300000)` call, or combine related captures into one `vibris_run_actions`
+`vibris_job(operation=wait, timeout_ms=240000)` call, or combine related captures into one `vibris_run_actions`
 sequence or one `vibris_run_matrix` request.
 
 If a control stream reports `RST_STREAM` after submission, the MCP reconnects and resumes the accepted request by
@@ -155,15 +155,22 @@ settings, origins, defaults, stable settings hash, and completion-time staleness
 A config without `values`, or an omitted recipe `config`, selects shaderpack defaults. It never preserves settings from
 an earlier request. `vibris_run_matrix` applies that rule independently to every generated source/config case.
 
-State-changing validation snapshots the source, effective settings, scene, and temporal state. Terminal results carry
-restoration receipts. If restoration cannot be proved, the job fails closed and status exposes the required recovery
-action.
+Jobs keep their final world, shader source, and settings after success, failure, or cancellation. Benchmark,
+profile-matrix, compile-validation, preview, and camera-motion jobs do not automatically return to their starting
+state. Requested loads still apply the target scene and reset temporal history as required for the measurement.
+
+Callers can explicitly opt into `restore_state.on_success` and/or `restore_state.on_error`; both default to `false`.
+Terminal results carry state-verification receipts. With restoration disabled these describe the retained final state
+and report `temporal_state_reset=false`; they do not claim a return to the starting state. An explicit restoration
+requires a verified initial snapshot and fails closed with a recovery action if restoration cannot be proved.
+Failed shader activation still rolls back uncommitted links and repairs a damaged pipeline when needed for safety;
+it does not switch back to the previous world unless error restoration was explicitly requested.
 
 ## Durable jobs
 
 Long-running work is stored below `.vibris/jobs/<job_id>` with immutable request/source inputs, atomic state,
 append-only events, immutable per-step receipts, and an immutable terminal result. Async submission returns a
-`next_action` containing `vibris_job(operation=wait, timeout_ms=300000)`. Invoke that blocking wait once. If it reaches
+`next_action` containing `vibris_job(operation=wait, timeout_ms=240000)`. Invoke that blocking wait once. If it reaches
 its five-minute bound first, invoke `wait` again. Never combine `query` with `Start-Sleep`, shell sleep, or repeated
 tool calls; `query` is only a one-time diagnostic snapshot. `wait` returns directly when the job completes, fails,
 pauses for resume, or is cancelled, and includes the terminal result when one exists. Use `cancel` to cancel a job and
@@ -187,7 +194,7 @@ Run `vibris_run_recipe` with `recipe: "compile_validate"` to enumerate the compl
 diagnostic fingerprints with an optional baseline. Compile validation does not require GPU warmup.
 
 Matrix and A/B benchmark jobs use typed target, sibling, and sentinel cases. Decisions require measured noise,
-confidence, order/reversal/drift checks, compile and visual gates, immutable provenance, and successful restoration.
+confidence, order/reversal/drift checks, compile and visual gates, immutable provenance, and verified terminal runtime state.
 The result explains every failed guardrail instead of producing an unqualified winner.
 
 ## Resources and action examples
@@ -253,6 +260,29 @@ readback bytes.
 ## Agent result projection
 
 Agent responses use one MCP boundary projection. Complete job results and receipts on disk are unchanged;
+Durable waits are capped at 240 seconds, leaving headroom below a 300-second transport deadline.
+Up to eight durable waits can run concurrently on one stdio connection; control calls remain serviceable and
+responses retain their request IDs. EOF interrupts client observers (without cancelling accepted GPU work),
+then joins outstanding waits before the backend is destroyed.
+
+Durable responses exceeding 256 KiB replace inline result details with a summary and `full_result_path`.
+The complete durable result remains on disk. Read that file for complete metrics and receipts; the summary
+explicitly marks omitted inline details. Events require an explicit cursor, return at most 128 records, and
+report `event_cursor`, `event_tail_cursor` and `event_has_more` so subsequent pages lose no events.
+Artifact lists return manifest summaries with full manifest paths and SHA values; `get` retrieves one full manifest.
+
+`JobTimings.execution_spans` records monotonic operation offsets from job acceptance and durations in nanoseconds.
+Spans may nest: action spans contain scene application, reset and frame-wait spans. Do not sum parent and child
+spans. Failed terminal receipts preserve completed operation spans. Runtime texture analysis and GPU measurements
+publish sampling progress instead of leaving the previous warmup stage active. Durable snapshots additionally
+report `preparation_timings.source_freeze_ms`, measured before Core submission and excluded from Core execution.
+`timings.native.source_prepare_and_delivery_ms` measures the local source copy/registration preparation.
+`submit_to_terminal_ms` contains Core queue and execution time; it is a parent interval, not additional work.
+Texture analysis reports `texture.sampling`, `texture.readback`, and `texture.statistics` or
+`texture.statistics_and_artifact_write` (the accumulation writer interleaves these two operations).
+`action.deferred_capture` likewise combines capture readback and its artifact writes. No per-frame GPU
+synchronization was added. Explicit restoration and manifest commit have their own spans.
+
 Synchronous and durable terminal results include `full_result_path`. Terminal `vibris_job` responses include events only when
 `event_cursor` was explicitly supplied. Effective settings retain the settings SHA, total setting count and only
 non-default, request-override or preset settings. Origins use short enum names. Subsequent occurrences of the same
@@ -343,7 +373,8 @@ The Core CompareCaptures action and enum number 5 are reserved and no longer exe
 
 `vibris_preview_presets` selects `preset_ids` or `tags`, supports refresh and sync/async execution, and renders
 cache misses through the durable multi-preset workflow using frozen workspace source and default settings.
-Both success and error restore runtime state. Thumbnails are keyed by preset SHA, tile width and Vibris version;
+Previews retain the final runtime scene on success and error. Thumbnails are keyed by preset SHA, tile width and
+Vibris version;
 their metadata records render-time source/settings SHAs. Contact sheets contain up to 24 scenes in 6x4 tiles,
 with preset IDs and tags in an embedded ASCII bitmap font. `list_presets` includes a cached thumbnail when available.
 
@@ -384,7 +415,7 @@ loaded and lie within the world border. The local player is positioned directly 
 simulation scope; no input injection or collision-driven travel is used. Every frame verifies the actual first-person
 eye position against the interpolated position and exports `planned_pose` alongside `actual_pose`. Player position,
 old interpolation coordinates and rotation are restored locally before the future completes on success, error or
-cancellation; the enclosing job also restores its source/settings/scene baseline.
+cancellation; the enclosing job keeps its final source/settings/scene unless restoration was explicitly requested.
 
 There must be 2-16 keyframes with strictly increasing frame offsets, starting at offset zero with zero yaw/pitch
 deltas. The final offset is at most 239; yaw deltas are finite and bounded to +/-720 degrees, pitch deltas to +/-180.
@@ -418,8 +449,8 @@ CPU renderer timestamps, not GPU timings. Missing/duplicate frames, changing vie
 misaligned shader clocks, cancellation, timeout, or readback errors fail the action rather than publishing a sparse
 sequence as complete. Use the full result file when the compact MCP projection omits detailed per-frame records.
 
-Camera motion forces both success and error restoration; explicitly disabling either in MCP arguments is rejected.
-Raw protocol callers must enable both restore flags. A verified Core source/settings/scene baseline is required.
-The camera position and rotation are restored and the deterministic clock scope is released locally before the motion future completes;
-the enclosing job then performs normal source/config/scene restoration and temporal reset. The existing window-position
+Camera motion does not require whole-job restoration or a prior source/settings/scene snapshot.
+The camera position and rotation are restored and the deterministic clock scope is released locally before the motion
+future completes on success, error, or cancellation. The enclosing job retains its final source/config/scene unless
+whole-job restoration was explicitly requested. The existing window-position
 preservation remains active. No game restart is implicit in this action.

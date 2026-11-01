@@ -408,9 +408,12 @@ nlohmann::json ResultMapper::agent_projection(
     if (experiment->value("kind", std::string{}) == "profile_matrix" && experiment->contains("table") &&
         arguments.value("result_detail", experiment->value("result_detail", std::string("metrics"))) != "full")
         experiment->erase("cases");
-    if (tool == "vibris_job" && !arguments.contains("event_cursor")) {
-        const auto state = result.value("workflow_state", std::string{});
-        if (state == "completed" || state == "failed" || state == "cancelled") result.erase("events");
+    if (tool == "vibris_job" && !arguments.contains("event_cursor")) result.erase("events");
+    if (tool == "vibris_artifacts" && arguments.value("operation", std::string{}) == "list") {
+        for (auto& manifest : result["manifests"]) {
+            manifest["file_count"] = manifest.value("files", nlohmann::json::array()).size();
+            manifest.erase("files");
+        }
     }
     if (tool == "vibris_list_presets" && result.contains("presets")) {
         for (auto& preset : result["presets"]) {
@@ -429,6 +432,20 @@ nlohmann::json ResultMapper::agent_projection(
     }
     std::map<std::string, std::string> settings, artifacts, resources;
     deduplicate_result(result, "", settings, artifacts, resources);
+    // Durable results remain complete on disk; the MCP envelope has a bounded budget.
+    if (result.contains("full_result_path") && result.contains("result") &&
+        result.dump().size() > 256U * 1024U) {
+        const auto& full = result.at("result");
+        nlohmann::json summary = nlohmann::json::object();
+        for (const auto* key : {"kind", "status", "success", "requested_cases", "completed_cases",
+                "passed", "failed", "timings"}) {
+            if (full.contains(key)) summary[key] = full[key];
+        }
+        summary["details_omitted_from_response"] = true;
+        summary["full_result_path"] = result.at("full_result_path");
+        result["result"] = std::move(summary);
+        result.erase("events");
+    }
     return result;
 }
 

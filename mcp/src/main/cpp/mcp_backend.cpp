@@ -11,6 +11,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -214,6 +215,8 @@ private:
             }
         }
 
+        void interrupt_waits() { jobs_.interrupt_waits(); }
+
         std::optional<GrpcClientStats> shutdown() {
             jobs_.shutdown();
             source_handler_.clear();
@@ -336,7 +339,7 @@ private:
                 {"sources", Json::array({{{"id", "workspace"}, {"kind", "workspace"}}})},
                 {"configs", Json::array({{{"id", "default"}, {"values", Json::object()}}})},
                 {"matrix", {{"sources", Json::array({"workspace"})}, {"configs", Json::array({"default"})}}},
-                {"restore_state", {{"on_success", true}, {"on_error", true}}},
+                {"restore_state", {{"on_success", false}, {"on_error", false}}},
                 {"actions", Json::array({{{"type", "wait_frames"}, {"frames", 32}},
                     {{"type", "take_screenshot"}, {"artifact_name", "preview"}, {"format", "png"}}})},
                 {"__vibris_preview", preview}};
@@ -673,6 +676,12 @@ public:
         }
     }
 
+    void interrupt_waits() {
+        std::scoped_lock lock(workspace_mutex_);
+        waits_interrupted_ = true;
+        for (auto& [root, runtime] : workspaces_) runtime->interrupt_waits();
+    }
+
     std::optional<GrpcClientStats> shutdown() {
         if (shutdown_) return std::nullopt;
         shutdown_ = true;
@@ -693,19 +702,23 @@ public:
 
 private:
     WorkspaceRuntime& workspace(const WorkspaceBinding& binding) {
+        std::scoped_lock lock(workspace_mutex_);
         for (auto& [root, runtime] : workspaces_) {
             std::error_code error;
             if (fs::equivalent(root, binding.root, error) && !error) return *runtime;
         }
         auto runtime = std::make_unique<WorkspaceRuntime>(
             binding, WorkspaceIdentityStore(binding.identity_path).load_or_create(), server_address_);
+        if (waits_interrupted_) runtime->interrupt_waits();
         auto* const result = runtime.get();
         workspaces_.emplace(binding.root, std::move(runtime));
         return *result;
     }
 
     std::string server_address_;
+    std::mutex workspace_mutex_;
     std::map<fs::path, std::unique_ptr<WorkspaceRuntime>> workspaces_;
+    bool waits_interrupted_ = false; // Protected by workspace_mutex_.
     bool shutdown_ = false;
 };
 
@@ -717,6 +730,8 @@ McpBackend::~McpBackend() = default;
 ToolOutcome McpBackend::dispatch(std::string_view name, const Json& arguments) {
     return impl_->dispatch(name, arguments);
 }
+
+void McpBackend::interrupt_waits() { impl_->interrupt_waits(); }
 
 std::optional<GrpcClientStats> McpBackend::shutdown() {
     return impl_->shutdown();

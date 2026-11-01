@@ -313,204 +313,212 @@ internal class ActionJobExecutor(
             fun executeSteps() {
                 action.program.steps.forEach { step ->
                     activeIndices = step.actionIndices()
-                    when (step.type) {
-                        CaptureProgramBuilder.ActionType.DETERMINISTIC -> executeDeterministic(step)
-                        CaptureProgramBuilder.ActionType.LOAD -> {
-                            val load = step.loadShader!!
-                            val execution = load(job, load, progress, deadline)
-                            diagnostics.addAll(execution.reload.diagnostics)
-                            prepared?.addDiagnostics(execution.reload.diagnostics)
-                            owner.observeCatalog(
-                                owner.await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline),
-                            )
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setRuntimeMutation(mutation(execution))
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.ACTIVATE -> {
-                            val execution = activate(job, step.sourceUuid!!, progress, deadline)
-                            diagnostics.addAll(execution.reload.diagnostics)
-                            prepared?.addDiagnostics(execution.reload.diagnostics)
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setRuntimeMutation(mutation(execution))
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.CAMERA_MOTION -> {
-                            if (prepared == null) throw captureUnavailable()
-                            if (!runtime.supportsCameraMotion()) {
-                                throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST, "Runtime does not support camera motion.")
+                    val stepStartedNanos = System.nanoTime()
+                    try {
+                        when (step.type) {
+                            CaptureProgramBuilder.ActionType.DETERMINISTIC -> executeDeterministic(step)
+                            CaptureProgramBuilder.ActionType.LOAD -> {
+                                val load = step.loadShader!!
+                                val execution = load(job, load, progress, deadline)
+                                diagnostics.addAll(execution.reload.diagnostics)
+                                prepared?.addDiagnostics(execution.reload.diagnostics)
+                                owner.observeCatalog(
+                                    owner.await(runtime.getCompileCatalog(job.cancellation.token()), job, deadline),
+                                )
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setRuntimeMutation(mutation(execution))
+                                        .build(),
+                                )
                             }
-                            val request = CameraMotionProtocol.toApi(step.runtimeAction!!.cameraMotion)
-                            if (request.hasTranslation() && !runtime.supportsCameraTranslation()) {
-                                throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST,
-                                    "Runtime does not support camera XYZ translation.")
+                            CaptureProgramBuilder.ActionType.ACTIVATE -> {
+                                val execution = activate(job, step.sourceUuid!!, progress, deadline)
+                                diagnostics.addAll(execution.reload.diagnostics)
+                                prepared?.addDiagnostics(execution.reload.diagnostics)
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setRuntimeMutation(mutation(execution))
+                                        .build(),
+                                )
                             }
-                            val planned = CameraMotionProtocol.plans(request, runtime.getResourceCatalog())
-                            planned.forEach { prepared.addPlan(it.capture, it.estimatedBytes) }
-                            val plans = planned.map { it.capture }
-                            val motion = owner.await(runtime.cameraMotion(request, plans, prepared.transaction,
-                                job.cancellation.token()), job, deadline)
-                            completedCapturePlans.addAll(plans)
-                            captured.addAll(motion.captures)
-                            receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
-                                .setCameraMotion(CameraMotionProtocol.receipt(request, motion, plans,
-                                    JobResult.getDefaultInstance(), captures)).build())
-                            pendingCaptureIndices.add(step.actionIndex)
-                            motions.add(step.actionIndex to Triple(request, motion, plans))
-                        }
-                        CaptureProgramBuilder.ActionType.RESET -> {
-                            owner.reset(job, progress, deadline)
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setResetTemporal(
-                                        ResetTemporalReceipt.newBuilder()
-                                            .setCompletedAtUnixMs(System.currentTimeMillis()),
-                                    )
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.WAIT -> {
-                            val endFrame = owner.waitFrames(job, progress, deadline, step.frames)
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setWaitFrames(waitReceipt(step.frames, endFrame))
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.CAPTURE -> {
-                            executeCaptureGroup(step.capture!!, step.captureActions)
-                        }
-                        CaptureProgramBuilder.ActionType.DEFERRED_CAPTURE -> {
-                            val resolved = resolveDeferredCapture(step)
-                            executeCaptureGroup(resolved.capture, resolved.captureActions)
-                        }
-                        CaptureProgramBuilder.ActionType.AFTER_PASS -> {
-                            executeAfterPassGroup(step.afterPassActions)
-                        }
-                        CaptureProgramBuilder.ActionType.DEFERRED_AFTER_PASS -> {
-                            executeAfterPassGroup(resolveDeferredAfterPass(step).afterPassActions)
-                        }
-                        CaptureProgramBuilder.ActionType.PATCHED_SHADERS -> {
-                            if (prepared == null) throw captureUnavailable()
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setPatchedShaders(PatchedShadersReceipt.getDefaultInstance())
-                                    .build(),
-                            )
-                            val placeholder = step.capture!!
-                            val result = owner.capturePatchedShaders(
-                                job,
-                                progress,
-                                deadline,
-                                prepared,
-                                placeholder.targets.single().artifactName,
-                            )
-                            val realized = CapturePlanBuilder.realizePatchedShaders(placeholder, result)
-                            captured.add(result)
-                            completedCapturePlans.add(realized)
-                            pendingCaptureIndices.add(step.actionIndex)
-                            patchedExecutions.add(PatchedExecution(step.actionIndex, realized, result))
-                        }
-                        CaptureProgramBuilder.ActionType.INSPECT -> {
-                            val catalog = owner.await(
-                                runtime.getCompileCatalog(job.cancellation.token()),
-                                job,
-                                deadline,
-                            )
-                            owner.observeCatalog(catalog)
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setShaderInspection(
-                                        ShaderInspectionReceipt.newBuilder()
-                                            .setCatalog(CompileCatalogProtocol.toProtocol(catalog)),
-                                    )
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.NSIGHT -> {
-                            if (prepared == null) throw captureUnavailable()
-                            val execution = nsight.execute(
-                                step.runtimeAction!!.nsightGpuTrace,
-                                job,
-                                progress,
-                                deadline,
-                                runtime,
-                                owner,
-                                prepared,
-                            )
-                            nsightExecutions.add(
-                                NsightExecution(step.actionIndex, execution.receipt, execution.artifacts),
-                            )
-                            pendingCaptureIndices.add(step.actionIndex)
-                            receiptBook.put(
-                                step.actionIndex,
-                                receiptBook.success(step.actionIndex)
-                                    .setNsightGpuTrace(execution.receipt)
-                                    .build(),
-                            )
-                        }
-                        CaptureProgramBuilder.ActionType.RUNTIME -> {
-                            if (step.runtimeAction!!.hasAccumulateTexture()) {
+                            CaptureProgramBuilder.ActionType.CAMERA_MOTION -> {
                                 if (prepared == null) throw captureUnavailable()
-                                val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog())
-                                val plan = request.outputPlan()
-                                val descriptor = runtime.getResourceCatalog().resources.single {
-                                    it.logicalName == request.resource.logicalName }
-                                val pixels = (request.resource.region?.width ?: maxOf(1, descriptor.width shr request.resource.mipLevel)).toLong() *
-                                    (request.resource.region?.height ?: maxOf(1, descriptor.height shr request.resource.mipLevel))
-                                val accumulation = requireNotNull(request.accumulation)
-                                val fields = accumulation.outputs.size + 3L
-                                val bytes = pixels * 4 * fields * (descriptor.channelCount +
-                                    if (accumulation.lumaWeights.isEmpty()) 0 else 1) + plan.targets.single().outputs.size * 65536L
-                                prepared.addPlan(plan, bytes)
-                                val result = owner.await(runtime.analyzeTexture(request, prepared.sink(), job.cancellation.token()), job, deadline)
-                                captured.add(requireNotNull(result.capture)); completedCapturePlans.add(plan)
-                                accumulationExecutions.add(Triple(step.actionIndex, plan, result))
-                                pendingCaptureIndices.add(step.actionIndex)
-                                receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
-                                    .setAccumulation(dev.vibris.protocol.v2.AccumulationReceipt.newBuilder()
-                                        .setSummaryJson(result.summaryJson)).build())
-                                return@forEach
-                            }
-                            if (step.runtimeAction!!.hasTextureStats()) {
-                                val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog())
-                                val result = owner.await(runtime.analyzeTexture(request, null, job.cancellation.token()), job, deadline)
-                                receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
-                                    .setTextureStats(TextureAnalysisProtocol.stats(result)).build())
-                                return@forEach
-                            }
-                            val response = owner.await(
-                                runtime.executeAction(RuntimeActionProtocol.toApi(step.runtimeAction!!)),
-                                job,
-                                deadline,
-                            )
-                            val receipt = receiptBook.success(step.actionIndex)
-                            if (step.runtimeAction.hasGetGpuMetrics()) {
-                                try {
-                                    receipt.setGpuMetrics(
-                                        RuntimeActionProtocol.gpuMetricsReceipt(step.runtimeAction, response),
-                                    )
-                                } catch (exception: IllegalArgumentException) {
-                                    throw RuntimeJobExecutor.Failure(
-                                        ErrorCode.ERROR_CODE_NO_GPU_SAMPLES,
-                                        exception.message ?: "GPU timing response is invalid.",
-                                    )
+                                if (!runtime.supportsCameraMotion()) {
+                                    throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST, "Runtime does not support camera motion.")
                                 }
-                            } else {
-                                receipt.setEmpty(EmptyReceipt.getDefaultInstance())
+                                val request = CameraMotionProtocol.toApi(step.runtimeAction!!.cameraMotion)
+                                if (request.hasTranslation() && !runtime.supportsCameraTranslation()) {
+                                    throw RuntimeJobExecutor.Failure(ErrorCode.ERROR_CODE_INVALID_REQUEST,
+                                        "Runtime does not support camera XYZ translation.")
+                                }
+                                val planned = CameraMotionProtocol.plans(request, runtime.getResourceCatalog())
+                                planned.forEach { prepared.addPlan(it.capture, it.estimatedBytes) }
+                                val plans = planned.map { it.capture }
+                                val motion = owner.await(runtime.cameraMotion(request, plans, prepared.transaction,
+                                    job.cancellation.token()), job, deadline)
+                                completedCapturePlans.addAll(plans)
+                                captured.addAll(motion.captures)
+                                receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                    .setCameraMotion(CameraMotionProtocol.receipt(request, motion, plans,
+                                        JobResult.getDefaultInstance(), captures)).build())
+                                pendingCaptureIndices.add(step.actionIndex)
+                                motions.add(step.actionIndex to Triple(request, motion, plans))
                             }
-                            receiptBook.put(step.actionIndex, receipt.build())
+                            CaptureProgramBuilder.ActionType.RESET -> {
+                                owner.reset(job, progress, deadline)
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setResetTemporal(
+                                            ResetTemporalReceipt.newBuilder()
+                                                .setCompletedAtUnixMs(System.currentTimeMillis()),
+                                        )
+                                        .build(),
+                                )
+                            }
+                            CaptureProgramBuilder.ActionType.WAIT -> {
+                                val endFrame = owner.waitFrames(job, progress, deadline, step.frames)
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setWaitFrames(waitReceipt(step.frames, endFrame))
+                                        .build(),
+                                )
+                            }
+                            CaptureProgramBuilder.ActionType.CAPTURE -> {
+                                executeCaptureGroup(step.capture!!, step.captureActions)
+                            }
+                            CaptureProgramBuilder.ActionType.DEFERRED_CAPTURE -> {
+                                val resolved = resolveDeferredCapture(step)
+                                executeCaptureGroup(resolved.capture, resolved.captureActions)
+                            }
+                            CaptureProgramBuilder.ActionType.AFTER_PASS -> {
+                                executeAfterPassGroup(step.afterPassActions)
+                            }
+                            CaptureProgramBuilder.ActionType.DEFERRED_AFTER_PASS -> {
+                                executeAfterPassGroup(resolveDeferredAfterPass(step).afterPassActions)
+                            }
+                            CaptureProgramBuilder.ActionType.PATCHED_SHADERS -> {
+                                if (prepared == null) throw captureUnavailable()
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setPatchedShaders(PatchedShadersReceipt.getDefaultInstance())
+                                        .build(),
+                                )
+                                val placeholder = step.capture!!
+                                val result = owner.capturePatchedShaders(
+                                    job,
+                                    progress,
+                                    deadline,
+                                    prepared,
+                                    placeholder.targets.single().artifactName,
+                                )
+                                val realized = CapturePlanBuilder.realizePatchedShaders(placeholder, result)
+                                captured.add(result)
+                                completedCapturePlans.add(realized)
+                                pendingCaptureIndices.add(step.actionIndex)
+                                patchedExecutions.add(PatchedExecution(step.actionIndex, realized, result))
+                            }
+                            CaptureProgramBuilder.ActionType.INSPECT -> {
+                                val catalog = owner.await(
+                                    runtime.getCompileCatalog(job.cancellation.token()),
+                                    job,
+                                    deadline,
+                                )
+                                owner.observeCatalog(catalog)
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setShaderInspection(
+                                            ShaderInspectionReceipt.newBuilder()
+                                                .setCatalog(CompileCatalogProtocol.toProtocol(catalog)),
+                                        )
+                                        .build(),
+                                )
+                            }
+                            CaptureProgramBuilder.ActionType.NSIGHT -> {
+                                if (prepared == null) throw captureUnavailable()
+                                val execution = nsight.execute(
+                                    step.runtimeAction!!.nsightGpuTrace,
+                                    job,
+                                    progress,
+                                    deadline,
+                                    runtime,
+                                    owner,
+                                    prepared,
+                                )
+                                nsightExecutions.add(
+                                    NsightExecution(step.actionIndex, execution.receipt, execution.artifacts),
+                                )
+                                pendingCaptureIndices.add(step.actionIndex)
+                                receiptBook.put(
+                                    step.actionIndex,
+                                    receiptBook.success(step.actionIndex)
+                                        .setNsightGpuTrace(execution.receipt)
+                                        .build(),
+                                )
+                            }
+                            CaptureProgramBuilder.ActionType.RUNTIME -> {
+                                progress.accept(JobStage.JOB_STAGE_SAMPLING)
+                                if (step.runtimeAction!!.hasAccumulateTexture()) {
+                                    if (prepared == null) throw captureUnavailable()
+                                    val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog()).copy(
+                                        timing = dev.vibris.api.OperationTiming(job::recordMeasuredSpan))
+                                    val plan = request.outputPlan()
+                                    val descriptor = runtime.getResourceCatalog().resources.single {
+                                        it.logicalName == request.resource.logicalName }
+                                    val pixels = (request.resource.region?.width ?: maxOf(1, descriptor.width shr request.resource.mipLevel)).toLong() *
+                                        (request.resource.region?.height ?: maxOf(1, descriptor.height shr request.resource.mipLevel))
+                                    val accumulation = requireNotNull(request.accumulation)
+                                    val fields = accumulation.outputs.size + 3L
+                                    val bytes = pixels * 4 * fields * (descriptor.channelCount +
+                                        if (accumulation.lumaWeights.isEmpty()) 0 else 1) + plan.targets.single().outputs.size * 65536L
+                                    prepared.addPlan(plan, bytes)
+                                    val result = owner.await(runtime.analyzeTexture(request, prepared.sink(), job.cancellation.token()), job, deadline)
+                                    captured.add(requireNotNull(result.capture)); completedCapturePlans.add(plan)
+                                    accumulationExecutions.add(Triple(step.actionIndex, plan, result))
+                                    pendingCaptureIndices.add(step.actionIndex)
+                                    receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                        .setAccumulation(dev.vibris.protocol.v2.AccumulationReceipt.newBuilder()
+                                            .setSummaryJson(result.summaryJson)).build())
+                                    return@forEach
+                                }
+                                if (step.runtimeAction!!.hasTextureStats()) {
+                                    val request = TextureAnalysisProtocol.request(step.runtimeAction, runtime.getResourceCatalog()).copy(
+                                        timing = dev.vibris.api.OperationTiming(job::recordMeasuredSpan))
+                                    val result = owner.await(runtime.analyzeTexture(request, null, job.cancellation.token()), job, deadline)
+                                    receiptBook.put(step.actionIndex, receiptBook.success(step.actionIndex)
+                                        .setTextureStats(TextureAnalysisProtocol.stats(result)).build())
+                                    return@forEach
+                                }
+                                val response = owner.await(
+                                    runtime.executeAction(RuntimeActionProtocol.toApi(step.runtimeAction!!)),
+                                    job,
+                                    deadline,
+                                )
+                                val receipt = receiptBook.success(step.actionIndex)
+                                if (step.runtimeAction.hasGetGpuMetrics()) {
+                                    try {
+                                        receipt.setGpuMetrics(
+                                            RuntimeActionProtocol.gpuMetricsReceipt(step.runtimeAction, response),
+                                        )
+                                    } catch (exception: IllegalArgumentException) {
+                                        throw RuntimeJobExecutor.Failure(
+                                            ErrorCode.ERROR_CODE_NO_GPU_SAMPLES,
+                                            exception.message ?: "GPU timing response is invalid.",
+                                        )
+                                    }
+                                } else {
+                                    receipt.setEmpty(EmptyReceipt.getDefaultInstance())
+                                }
+                                receiptBook.put(step.actionIndex, receipt.build())
+                            }
                         }
+                    } finally {
+                        job.recordSpan("action.${step.type.name.lowercase()}", stepStartedNanos)
                     }
                     activeIndices = emptyList()
                 }
@@ -550,16 +558,14 @@ internal class ActionJobExecutor(
                 executeSequencedSteps()
                 progress.accept(JobStage.JOB_STAGE_WRITING_ARTIFACTS)
                 probe.event(job.requestId, "WRITING_ARTIFACTS")
-                val resultArtifacts = ProfileResultArtifacts.write(
-                    job.submission,
-                    prepared.transaction,
-                    receiptBook.complete().actions,
-                )
+                val resultArtifacts = job.measure("artifact.profile_write") {
+                    ProfileResultArtifacts.write(job.submission, prepared.transaction, receiptBook.complete().actions)
+                }
                 val generatedArtifacts = resultArtifacts + nsightExecutions.flatMap(NsightExecution::artifacts)
                 progress.accept(JobStage.JOB_STAGE_FINALIZING)
                 probe.event(job.requestId, "FINALIZING")
                 activeIndices = pendingCaptureIndices.toList()
-                val committed = captures.commit(
+                val committed = job.measure("artifact.commit") { captures.commit(
                     job,
                     prepared,
                     completedCapturePlans,
@@ -568,7 +574,7 @@ internal class ActionJobExecutor(
                     afterPassExecutions.associate { execution ->
                         execution.receipt.request.target.artifactName to execution.receipt.physicalName
                     },
-                )
+                ) }
                 motions.forEach { (index, motion) ->
                     receiptBook.replace(index, receiptBook.success(index).setCameraMotion(
                         CameraMotionProtocol.receipt(motion.first, motion.second, motion.third, committed, captures)

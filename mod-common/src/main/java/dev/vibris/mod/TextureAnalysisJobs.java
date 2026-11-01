@@ -33,6 +33,7 @@ final class TextureAnalysisJobs implements AutoCloseable {
 		for (var iterator = pending.iterator(); iterator.hasNext();) {
 			Pending work = iterator.next();
 			if (work.result.isDone() || work.cancellation.isCancellationRequested()) {
+				work.finishSampling();
 				if (work.accumulator != null) work.accumulator.close();
 				work.result.completeExceptionally(new CancellationException("Texture analysis cancelled"));
 				iterator.remove();
@@ -42,28 +43,39 @@ final class TextureAnalysisJobs implements AutoCloseable {
 			try {
 				var selector = work.request.resource();
 				if (work.request.accumulation() != null) {
+					if (work.samplingStarted == 0) work.samplingStarted = System.nanoTime();
 					if (work.accumulator == null) work.accumulator = new GpuTextureAccumulator(
 						work.request.accumulation(), selector.region(), work.texture.getAsInt(), selector.mipLevel());
 					if (!work.accumulator.sample(work.texture.getAsInt(), frameId)) continue;
-					var snapshot = TextureAccumulationOutput.snapshot(work.request, work.accumulator);
+					work.finishSampling();
+					var snapshot = measure(work, "texture.readback", () -> TextureAccumulationOutput.snapshot(work.request, work.accumulator));
 					work.accumulator.close();
 					work.accumulator = null;
-					completeOffThread(work, () -> TextureAccumulationOutput.write(work.request, snapshot,
-						Objects.requireNonNull(work.sink), work.cancellation));
+					completeOffThread(work, () -> measure(work, "texture.statistics_and_artifact_write", () ->
+						TextureAccumulationOutput.write(work.request, snapshot, Objects.requireNonNull(work.sink), work.cancellation)));
 				} else {
+					long readStarted = System.nanoTime();
 					try (var readback = GlArtifactCapture.readTexture(work.texture.getAsInt(), selector.mipLevel(), selector.region())) {
 						int channels = readback.getMetadata().getChannelCount();
 						var values = readback.values(selector.layer());
-						completeOffThread(work, () -> new TextureAnalysisResult(frameId,
-							TextureStatistics.compute(channels, values), "{}", null));
+						work.request.recordTiming("texture.readback", readStarted);
+						completeOffThread(work, () -> measure(work, "texture.statistics", () -> new TextureAnalysisResult(frameId,
+							TextureStatistics.compute(channels, values), "{}", null)));
 					}
 				}
 			} catch (Throwable failure) {
+				work.finishSampling();
 				work.result.completeExceptionally(failure);
 			}
 			iterator.remove();
 			if (work.accumulator != null) work.accumulator.close();
 		}
+	}
+
+	private static <T> T measure(Pending work, String operation, java.util.function.Supplier<T> block) {
+		long start = System.nanoTime();
+		try { return block.get(); }
+		finally { work.request.recordTiming(operation, start); }
 	}
 
 	private static void completeOffThread(Pending work, java.util.function.Supplier<TextureAnalysisResult> operation) {
@@ -72,6 +84,7 @@ final class TextureAnalysisJobs implements AutoCloseable {
 				work.cancellation.throwIfCancellationRequested();
 				work.result.complete(operation.get());
 			} catch (Throwable failure) {
+				work.finishSampling();
 				work.result.completeExceptionally(failure);
 			}
 		}, "vibris-texture-analysis-output");
@@ -83,6 +96,7 @@ final class TextureAnalysisJobs implements AutoCloseable {
 	@Override public synchronized void close() {
 		closed = true;
 		pending.forEach(work -> {
+			work.finishSampling();
 			if (work.accumulator != null) work.accumulator.close();
 			work.result.completeExceptionally(new CancellationException("Pipeline destroyed"));
 		});
@@ -96,6 +110,12 @@ final class TextureAnalysisJobs implements AutoCloseable {
 		final IntSupplier texture;
 		final CompletableFuture<TextureAnalysisResult> result = new CompletableFuture<>();
 		GpuTextureAccumulator accumulator;
+		long samplingStarted;
+		void finishSampling() {
+			if (samplingStarted == 0) return;
+			request.recordTiming("texture.sampling", samplingStarted);
+			samplingStarted = 0;
+		}
 		Pending(TextureAnalysisRequest request, ArtifactSink sink, CancellationToken cancellation, IntSupplier texture) {
 			this.request = request; this.sink = sink; this.cancellation = cancellation; this.texture = texture;
 		}

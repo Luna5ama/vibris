@@ -552,12 +552,15 @@ class VibrisCoreEngine internal constructor(
         successful: Boolean,
         releaseSources: Boolean = true,
     ) {
+        val delivered = terminal.failed?.let { failure ->
+            TerminalResult.failed(failure.toBuilder().addAllExecutionSpans(job.executionSpans()).build())
+        } ?: terminal
         val session = synchronized(this) {
             if (liveJobs.remove(job.requestId) == null) return
             if (releaseSources) {
                 activator.release(job.sources)
             }
-            requests.finish(job.requestId, state, terminal)
+            requests.finish(job.requestId, state, delivered)
             terminalJobs[job.submission.jobId] = terminalSummary(job, state)
             while (terminalJobs.size > TERMINAL_JOB_CAPACITY) {
                 terminalJobs.remove(terminalJobs.keys.iterator().next())
@@ -589,7 +592,7 @@ class VibrisCoreEngine internal constructor(
         try {
             delivery.send(
                 session,
-                terminal.message(job.messageId, job.requestId, job.workspaceId),
+                delivered.message(job.messageId, job.requestId, job.workspaceId),
             )
         } finally {
             synchronized(this) {
@@ -662,7 +665,8 @@ class VibrisCoreEngine internal constructor(
 
     private fun conditionSatisfiedLocked(condition: StatusWaitCondition, jobId: String): Boolean = when (condition) {
         StatusWaitCondition.STATUS_WAIT_CONDITION_CAN_ACCEPT_JOB -> projectionLocked().canAcceptJob
-        StatusWaitCondition.STATUS_WAIT_CONDITION_JOB_TERMINAL -> terminalJobs[jobId]?.state?.terminal() == true
+        StatusWaitCondition.STATUS_WAIT_CONDITION_JOB_TERMINAL ->
+            terminalJobs[jobId]?.state?.terminal() == true && scheduler.snapshot().active?.metadata?.jobId != jobId
         else -> true
     }
 
