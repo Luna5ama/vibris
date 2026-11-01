@@ -311,13 +311,43 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 
 	@Override
 	public CompletionStage<ContextApplyResult> applyContext(SceneContext context, CancellationToken cancellation) {
-		return contexts.apply(context, cancellation).thenApply(result -> {
-			if (result.successful()) {
-				activeContext = result.context();
-				IrisVibrisAutomation.contextApplied(result.context(), minecraft);
+		CompletableFuture<ContextApplyResult> result = new CompletableFuture<>();
+		closeWorldSimulation();
+		MinecraftContextController.ContextOperation operation = contexts.begin(context, cancellation);
+		operation.preparation().whenComplete((prepared, failure) -> runOnClient(result, () -> {
+			if (failure != null || !prepared.successful()) {
+				contexts.release(operation);
+				if (failure != null) result.completeExceptionally(unwrap(failure));
+				else result.complete(prepared);
+				return;
 			}
-			return result;
-		});
+			try {
+				deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
+				contexts.awaitSceneReady(operation).whenComplete((ready, readyFailure) -> runOnClient(result, () -> {
+					try {
+						contexts.release(operation);
+						if (!deterministicSequence) closeWorldSimulation();
+						if (readyFailure != null) result.completeExceptionally(unwrap(readyFailure));
+						else {
+							if (ready.successful()) {
+								activeContext = ready.context();
+								IrisVibrisAutomation.contextApplied(ready.context(), minecraft);
+							}
+							result.complete(ready);
+						}
+					} catch (Throwable caught) {
+						result.completeExceptionally(caught);
+					}
+				}, () -> contexts.release(operation)));
+			} catch (Throwable caught) {
+				contexts.release(operation);
+				if (!deterministicSequence) {
+					try { closeWorldSimulation(); } catch (Throwable cleanup) { caught.addSuppressed(cleanup); }
+				}
+				result.completeExceptionally(caught);
+			}
+		}, () -> contexts.release(operation)));
+		return result;
 	}
 
 	@Override
@@ -326,19 +356,34 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		if (deterministicSequence) {
 			throw new IllegalStateException("A deterministic runtime sequence is already active");
 		}
+		if (minecraft.level != null && minecraft.getSingleplayerServer() != null) {
+			deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
+		}
 		deterministicSequence = true;
 	}
 
 	@Override
 	public void endDeterministicSequence(CancellationToken cancellation) {
 		cancellation.throwIfCancellationRequested();
-		if (cameraMotion != null) cameraMotion.close();
-		Throwable failure = deterministicSimulation == null ? null : closeCaptureScope(deterministicSimulation);
-		deterministicSimulation = null;
-		deterministicSequence = false;
+		Throwable failure = cameraMotion == null ? null : closeCaptureScope(cameraMotion);
+		try {
+			closeWorldSimulation();
+			deterministicSequence = false;
+		} catch (Throwable cleanup) {
+			if (failure != null) cleanup.addSuppressed(failure);
+			if (cleanup instanceof RuntimeException runtime) throw runtime;
+			if (cleanup instanceof Error error) throw error;
+			throw new IllegalStateException("Failed to restore world simulation", cleanup);
+		}
 		if (failure instanceof RuntimeException runtime) throw runtime;
 		if (failure instanceof Error error) throw error;
-		if (failure != null) throw new IllegalStateException("Failed to restore world simulation", failure);
+		if (failure != null) throw new IllegalStateException("Failed to restore camera motion", failure);
+	}
+
+	private void closeWorldSimulation() {
+		if (deterministicSimulation == null) return;
+		deterministicSimulation.close();
+		deterministicSimulation = null;
 	}
 
 	@Override
@@ -394,6 +439,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		MinecraftContextController.ContextOperation contextOperation;
 		try {
 			boolean retainedContext = deterministicSequence && request.context().equals(activeContext);
+			if (!retainedContext) closeWorldSimulation();
 			contextOperation = retainedContext ?
 				contexts.beginCurrent(request.context(), cancellation) :
 				contexts.begin(request.context(), cancellation);

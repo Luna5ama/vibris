@@ -81,6 +81,10 @@ class RuntimeRestorationTest {
         assertEquals(candidate.uuid, fixture.registry.activeUuid());
         assertEquals(1, fixture.runtime.events.stream().filter("reload"::equals).count());
         assertEquals(1, fixture.runtime.events.stream().filter("context"::equals).count());
+        assertTrue(fixture.runtime.events.indexOf("deterministic-sequence-begin") <
+            fixture.runtime.events.indexOf("context"));
+        assertTrue(fixture.runtime.events.indexOf("deterministic-sequence-end") >
+            fixture.runtime.events.indexOf("context"));
         assertEquals(1, fixture.runtime.events.stream().filter("reset"::equals).count());
         assertFalse(result.completed().getResult().getRestoration().getTemporalStateReset());
         assertEquals(candidate.uuid, result.completed().getResult().getRestoration().getActualSourceUuid());
@@ -173,6 +177,7 @@ class RuntimeRestorationTest {
 
         assertEquals(ErrorCode.ERROR_CODE_CANCELLED, failure.code);
         assertEquals(ReceiptStatus.RECEIPT_STATUS_OK, failure.restoration.getStatus());
+        assertTrue(fixture.runtime.events.contains("deterministic-sequence-end"));
         assertTrue(failure.restoration.getTemporalStateReset());
         assertEquals(baseline.uuid, fixture.registry.activeUuid());
     }

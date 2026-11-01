@@ -49,14 +49,6 @@ final class MinecraftContextController {
 		this.presets = presets;
 	}
 
-	CompletionStage<ContextApplyResult> apply(SceneContext context, CancellationToken cancellation) {
-		ContextOperation operation = begin(context, cancellation);
-		return operation.preparation().thenCompose(prepared -> {
-			if (!prepared.successful()) return CompletableFuture.completedFuture(prepared);
-			return awaitSceneReady(operation);
-		}).whenComplete((ignored, failure) -> release(operation));
-	}
-
 	ContextOperation begin(SceneContext context, CancellationToken cancellation) {
 		cancellation.throwIfCancellationRequested();
 		ContextOperation operation = new ContextOperation(

@@ -524,38 +524,12 @@ internal class ActionJobExecutor(
                 }
             }
 
-            fun executeSequencedSteps() {
-                val deterministic = action.program.steps.any {
-                    it.type == CaptureProgramBuilder.ActionType.DETERMINISTIC ||
-                        it.type == CaptureProgramBuilder.ActionType.CAMERA_MOTION
-                }
-                if (!deterministic) {
-                    executeSteps()
-                    return
-                }
-
-                var executionFailure: Throwable? = null
-                try {
-                    owner.beginDeterministicSequence(job, deadline)
-                    executeSteps()
-                } catch (failure: Throwable) {
-                    executionFailure = failure
-                }
-                try {
-                    owner.endDeterministicSequence()
-                } catch (cleanupFailure: Throwable) {
-                    executionFailure?.let(cleanupFailure::addSuppressed)
-                    throw cleanupFailure
-                }
-                executionFailure?.let { throw it }
-            }
-
             if (prepared == null) {
-                executeSequencedSteps()
+                executeSteps()
                 return receiptBook.complete().addTo(JobResult.newBuilder()).build()
             }
             prepared.use {
-                executeSequencedSteps()
+                executeSteps()
                 progress.accept(JobStage.JOB_STAGE_WRITING_ARTIFACTS)
                 probe.event(job.requestId, "WRITING_ARTIFACTS")
                 val resultArtifacts = job.measure("artifact.profile_write") {

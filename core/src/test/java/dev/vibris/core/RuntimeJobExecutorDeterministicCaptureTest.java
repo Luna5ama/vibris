@@ -224,8 +224,8 @@ class RuntimeJobExecutorDeterministicCaptureTest {
         assertEquals(0, fixture.runtime.deterministicCaptureCalls);
         assertEquals(2, fixture.runtime.events.stream().filter("frames"::equals).count());
         assertEquals(1, fixture.runtime.events.stream().filter("capture"::equals).count());
-        assertFalse(fixture.runtime.events.contains("deterministic-sequence-begin"));
-        assertFalse(fixture.runtime.events.contains("deterministic-sequence-end"));
+        assertTrue(fixture.runtime.events.contains("deterministic-sequence-begin"));
+        assertTrue(fixture.runtime.events.contains("deterministic-sequence-end"));
         assertEquals(ReceiptStatus.RECEIPT_STATUS_OK,
             terminal.completed().getResult().getPreludeReceipts(0).getStatus());
     }

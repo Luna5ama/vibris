@@ -93,7 +93,7 @@ class RuntimeJobExecutorCaptureTest {
             .build()), ignored -> {});
 
         var result = terminal.completed().getResult();
-        assertEquals(List.of("link:A", "reload", "context", "capture"), fixture.runtime.events);
+        assertEquals(List.of("deterministic-sequence-begin", "link:A", "reload", "context", "capture", "deterministic-sequence-end"), fixture.runtime.events);
         assertEquals(result.getActionReceipts(0).getRuntimeMutation().getSourceUuid(),
             result.getProvenance().getActiveSourceUuid());
         assertEquals(7, result.getArtifactsCount());
@@ -248,10 +248,10 @@ class RuntimeJobExecutorCaptureTest {
 
         var result = terminal.completed().getResult();
         assertEquals(List.of(
-            "link:A", "reload", "context",
+            "deterministic-sequence-begin", "link:A", "reload", "context",
             "capture_after_pass:current-after",
             "capture_after_pass:alternate-after",
-            "capture_after_pass:buffer-after"
+            "capture_after_pass:buffer-after", "deterministic-sequence-end"
         ), fixture.runtime.events);
         assertEquals(3, pending.size());
         assertEquals(4, result.getActionReceiptsCount());
@@ -377,7 +377,7 @@ class RuntimeJobExecutorCaptureTest {
             .build()), ignored -> {});
 
         var result = terminal.completed().getResult();
-        assertEquals(List.of("link:A", "reload", "context", "frames", "capture"), fixture.runtime.events);
+        assertEquals(List.of("deterministic-sequence-begin", "link:A", "reload", "context", "frames", "capture", "deterministic-sequence-end"), fixture.runtime.events);
         assertEquals(2, result.getActionReceiptsCount());
         var screenshotReceipt = result.getActionReceipts(1);
         assertEquals(1, screenshotReceipt.getActionIndex());

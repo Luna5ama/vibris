@@ -65,7 +65,7 @@ class RuntimeJobExecutorTest {
 
         TerminalResult terminal = fixture.executor.execute(job, ignored -> {});
 
-        assertEquals(List.of("link:A", "reload", "context", "reset", "compile_catalog", "frames"),
+        assertEquals(List.of("deterministic-sequence-begin", "link:A", "reload", "context", "reset", "compile_catalog", "frames", "deterministic-sequence-end"),
             fixture.runtime.events);
         var timings = terminal.completed().getResult().getTimings();
         var actions = timings.getExecutionSpansList().stream()
@@ -153,7 +153,7 @@ class RuntimeJobExecutorTest {
             fixture.loadJob(equivalent, ShaderConfig.newBuilder().setPreserveCurrent(true).build(), true),
             ignored -> {});
 
-        assertEquals(List.of("compile_catalog", "link:same", "context", "reset", "compile_catalog", "link:same", "context", "reset"),
+        assertEquals(List.of("deterministic-sequence-begin", "compile_catalog", "link:same", "context", "reset", "compile_catalog", "deterministic-sequence-end", "link:same", "context", "reset"),
             fixture.runtime.events);
         assertEquals(baseline.uuid, fixture.registry.activeUuid());
         assertEquals(baseline.uuid, terminal.completed().getResult().getRestoration().getActualSourceUuid());
@@ -175,7 +175,7 @@ class RuntimeJobExecutorTest {
 
         fixture.executor.execute(fixture.loadJob(equivalent, config, false), ignored -> {});
 
-        assertEquals(List.of("compile_catalog", "link:same", "context", "reset", "compile_catalog"), fixture.runtime.events);
+        assertEquals(List.of("deterministic-sequence-begin", "compile_catalog", "link:same", "context", "reset", "compile_catalog", "deterministic-sequence-end"), fixture.runtime.events);
         assertEquals(equivalent.uuid, fixture.registry.activeUuid());
     }
 
@@ -215,7 +215,7 @@ class RuntimeJobExecutorTest {
         fixture.executor.execute(fixture.loadJob(
             equivalent, ShaderConfig.getDefaultInstance(), false), ignored -> {});
 
-        assertEquals(List.of("link:same", "reload", "context", "reset", "compile_catalog"),
+        assertEquals(List.of("deterministic-sequence-begin", "link:same", "reload", "context", "reset", "compile_catalog", "deterministic-sequence-end"),
             fixture.runtime.events);
         assertEquals(equivalent.uuid, fixture.registry.activeUuid());
     }
@@ -255,7 +255,7 @@ class RuntimeJobExecutorTest {
         assertEquals(ErrorCode.ERROR_CODE_SHADER_COMPILE_FAILED, failure.code);
         assertEquals(baseline.uuid, fixture.registry.activeUuid());
         assertTrue(fixture.activator.ready());
-        assertEquals(List.of("link:baseline", "link:candidate", "reload", "link:baseline", "reload"),
+        assertEquals(List.of("link:baseline", "deterministic-sequence-begin", "link:candidate", "reload", "link:baseline", "reload", "deterministic-sequence-end"),
             fixture.runtime.events);
         assertEquals(1, failure.artifacts.size());
         assertTrue(Files.readString(Path.of(failure.artifacts.getFirst().getRelativePath()))
@@ -357,7 +357,7 @@ class RuntimeJobExecutorTest {
         var receipt = terminal.completed().getResult().getActionReceipts(0);
         var catalog = receipt.getShaderInspection().getCatalog();
 
-        assertEquals(List.of("compile_catalog"), fixture.runtime.events);
+        assertEquals(List.of("deterministic-sequence-begin", "compile_catalog", "deterministic-sequence-end"), fixture.runtime.events);
         assertEquals(ActionKind.ACTION_KIND_INSPECT_SHADER, receipt.getKind());
         assertEquals(fixture.runtime.compileCatalog.mappingSha256(), catalog.getMappingSha256());
         assertEquals(12, catalog.getShaderGeneration());
@@ -491,7 +491,7 @@ class RuntimeJobExecutorTest {
             () -> fixture.executor.execute(job, ignored -> {}));
 
         assertEquals(ErrorCode.ERROR_CODE_INVALID_SOURCE, failure.code);
-        assertTrue(fixture.runtime.events.isEmpty());
+        assertEquals(List.of("deterministic-sequence-begin", "deterministic-sequence-end"), fixture.runtime.events);
     }
 
     @Test

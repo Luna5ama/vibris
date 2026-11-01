@@ -102,10 +102,12 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             activeContext,
         )
         try {
-            var completed = if (job.submission.hasCompileValidation()) {
-                compileValidation.execute(job, progress, deadline)
-            } else {
-                actions.execute(job, progress, deadline)
+            var completed = executeInWorldSequence(job, deadline) {
+                if (job.submission.hasCompileValidation()) {
+                    compileValidation.execute(job, progress, deadline)
+                } else {
+                    actions.execute(job, progress, deadline)
+                }
             }
             completed = attachProvenance(job, completed)
             val restoration = terminalize(job, isolation, true, progress)
@@ -136,6 +138,26 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
             isolation.release(activator)
             throw wrapped.withRestoration(restored)
         }
+    }
+
+    private fun <T> executeInWorldSequence(job: CoreJob, deadline: Long, action: () -> T): T {
+        var failure: Throwable? = null
+        var result: T? = null
+        try {
+            beginDeterministicSequence(job, deadline)
+            result = action()
+        } catch (caught: Throwable) {
+            failure = caught
+        }
+        try {
+            endDeterministicSequence()
+        } catch (cleanup: Throwable) {
+            failure?.let(cleanup::addSuppressed)
+            throw cleanup
+        }
+        failure?.let { throw it }
+        @Suppress("UNCHECKED_CAST")
+        return result as T
     }
 
     private fun completed(
