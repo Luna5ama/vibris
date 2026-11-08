@@ -40,6 +40,7 @@ internal class ServerDescriptor @JvmOverloads constructor(
         .addCapabilities(Capability.CAPABILITY_GRACEFUL_RESTART)
         .apply { if (runtime.supportsCameraMotion()) addCapabilities(Capability.CAPABILITY_CAMERA_MOTION) }
         .apply { if (runtime.supportsCameraTranslation()) addCapabilities(Capability.CAPABILITY_CAMERA_TRANSLATION) }
+        .apply { if (runtime.supportsWorldUnfreeze()) addCapabilities(Capability.CAPABILITY_WORLD_UNFREEZE) }
         .setLimits(
             ServerLimits.newBuilder()
                 .setMaxSourceBytes(maxSourceBytes)

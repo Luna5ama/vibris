@@ -96,6 +96,7 @@ void ordinary_actions_preserve_the_final_runtime_state_by_default() {
 	const auto request = JobProtocol::request(
 		"vibris_run_actions", arguments, config(), scene(), {}, std::string(request_id));
 	const auto& restore = request.submit_job().job().restore_state();
+	require(!request.submit_job().job().unfreeze_world(), "ordinary jobs did not default to frozen world ticks");
 	require(!restore.on_success() && !restore.on_error(),
 		"ordinary jobs did not preserve the final runtime state by default");
 }
@@ -319,6 +320,7 @@ void terminal_integer_scalars_are_canonical_native_numbers() {
 
 void matrix_auto_load_is_a_prelude_receipt_action() {
 	const Json arguments{
+		{"unfreeze_world", true},
 		{"actions", Json::array({{{"type", "wait_frames"}, {"frames", 2}}})},
 		{"sources", Json::array({{{"id", "candidate"}, {"kind", "workspace"}}})},
 		{"configs", Json::array({{{"id", "defaults"}}})},
@@ -329,6 +331,7 @@ void matrix_auto_load_is_a_prelude_receipt_action() {
 		"vibris_run_matrix", arguments, config(), scene(), sources, std::string(request_id));
 	const auto& job = request.submit_job().job();
 	const auto& actions = job.action_sequence();
+	require(job.unfreeze_world(), "matrix lost the top-level unfreeze_world flag");
 	require(job.has_action_sequence() && !job.has_matrix() && actions.actions_size() == 2,
 		"matrix case did not contain one auto-load and one requested action");
 	require(actions.actions(0).has_load_shader() &&

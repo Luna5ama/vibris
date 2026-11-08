@@ -37,6 +37,7 @@ enum Capability {
     CAPABILITY_GRACEFUL_RESTART = 11;
     CAPABILITY_CAMERA_MOTION = 12;
     CAPABILITY_CAMERA_TRANSLATION = 13;
+    CAPABILITY_WORLD_UNFREEZE = 14;
 }
 
 message ClientMessage {
@@ -466,6 +467,7 @@ message JobSpec {
     ResultArtifactOptions result_artifacts = 7;
     string preset_sha256 = 8;
     string scheduling_group_id = 9;
+    bool unfreeze_world = 10;
     oneof workload {
         ActionSequence action_sequence = 20;
         MatrixRequest matrix = 21;

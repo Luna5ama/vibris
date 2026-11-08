@@ -1285,7 +1285,7 @@ internal class RuntimeJobExecutor @JvmOverloads constructor(
 
     @Throws(Failure::class)
     fun beginDeterministicSequence(job: CoreJob, deadline: Long) {
-        await(runtime.beginDeterministicSequence(job.cancellation.token()), job, deadline)
+        await(runtime.beginWorldSequence(job.cancellation.token(), job.submission.unfreezeWorld), job, deadline)
     }
 
     @Throws(Failure::class)

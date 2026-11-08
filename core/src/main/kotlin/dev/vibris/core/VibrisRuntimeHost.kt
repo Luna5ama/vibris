@@ -24,6 +24,8 @@ interface VibrisRuntimeHost : AutoCloseable {
     fun supportsCameraMotion(): Boolean = false
     fun supportsCameraTranslation(): Boolean = false
 
+    fun supportsWorldUnfreeze(): Boolean = false
+
     fun cameraMotion(
         request: dev.vibris.api.CameraMotionPlan,
         plans: List<CapturePlan>,
@@ -68,6 +70,11 @@ interface VibrisRuntimeHost : AutoCloseable {
     ): CompletionStage<DeterministicTemporalCaptureOutcome>
 
     fun beginDeterministicSequence(cancellation: CancellationToken)
+
+    fun beginWorldSequence(cancellation: CancellationToken, unfreezeWorld: Boolean) {
+        if (unfreezeWorld) throw UnsupportedOperationException("This host cannot unfreeze world simulation for a job.")
+        beginDeterministicSequence(cancellation)
+    }
 
     fun endDeterministicSequence(cancellation: CancellationToken)
 

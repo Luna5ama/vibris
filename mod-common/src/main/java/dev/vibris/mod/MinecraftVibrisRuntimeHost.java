@@ -69,7 +69,8 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	private volatile boolean closed;
 	private boolean deterministicSequence;
 	private CameraMotionController cameraMotion;
-	private DeterministicWorldSimulation.Scope deterministicSimulation;
+	private final DeterministicWorldSimulation worldSimulation = new DeterministicWorldSimulation();
+	private boolean unfreezeWorld;
 
 	public MinecraftVibrisRuntimeHost(Path gameDirectory) throws IOException {
 		minecraft = Minecraft.getInstance();
@@ -86,6 +87,14 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		shaderConfigScratch = pendingRoot.resolveSibling("config").resolve("vibris.txt");
 	}
 
+	void updateWorldSimulation() {
+		worldSimulation.apply(minecraft, !unfreezeWorld);
+	}
+
+	boolean isWorldSimulationFrozen() {
+		return worldSimulation.isFrozen(minecraft.level);
+	}
+
 	void beforeRenderedFrame(long frameId) {
 		if (cameraMotion != null) cameraMotion.beforeFrame(frameId, System.nanoTime());
 	}
@@ -100,6 +109,9 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 
 	@Override
 	public boolean supportsCameraTranslation() { return true; }
+
+	@Override
+	public boolean supportsWorldUnfreeze() { return true; }
 
 	@Override
 	public CompletionStage<CameraMotionResult> cameraMotion(CameraMotionPlan request, List<CapturePlan> plans,
@@ -125,7 +137,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		float previousYaw = player.yRotO, previousPitch = player.xRotO;
 		int width = minecraft.getWindow().getWidth(), height = minecraft.getWindow().getHeight();
 		request.validateAnchor(yaw, pitch);
-		if (deterministicSimulation == null) deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
 		VibrisTime.Scope time = VibrisTime.begin(frames.currentFrame());
 		try {
 			TemporalResetResult reset = resetTemporal(cancellation);
@@ -312,7 +323,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	@Override
 	public CompletionStage<ContextApplyResult> applyContext(SceneContext context, CancellationToken cancellation) {
 		CompletableFuture<ContextApplyResult> result = new CompletableFuture<>();
-		closeWorldSimulation();
 		MinecraftContextController.ContextOperation operation = contexts.begin(context, cancellation);
 		operation.preparation().whenComplete((prepared, failure) -> runOnClient(result, () -> {
 			if (failure != null || !prepared.successful()) {
@@ -322,11 +332,11 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 				return;
 			}
 			try {
-				deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
+				cancellation.throwIfCancellationRequested();
+				updateWorldSimulation();
 				contexts.awaitSceneReady(operation).whenComplete((ready, readyFailure) -> runOnClient(result, () -> {
 					try {
 						contexts.release(operation);
-						if (!deterministicSequence) closeWorldSimulation();
 						if (readyFailure != null) result.completeExceptionally(unwrap(readyFailure));
 						else {
 							if (ready.successful()) {
@@ -341,9 +351,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 				}, () -> contexts.release(operation)));
 			} catch (Throwable caught) {
 				contexts.release(operation);
-				if (!deterministicSequence) {
-					try { closeWorldSimulation(); } catch (Throwable cleanup) { caught.addSuppressed(cleanup); }
-				}
 				result.completeExceptionally(caught);
 			}
 		}, () -> contexts.release(operation)));
@@ -352,13 +359,17 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 
 	@Override
 	public void beginDeterministicSequence(CancellationToken cancellation) {
+		beginWorldSequence(cancellation, false);
+	}
+
+	@Override
+	public void beginWorldSequence(CancellationToken cancellation, boolean unfreezeWorld) {
 		cancellation.throwIfCancellationRequested();
 		if (deterministicSequence) {
 			throw new IllegalStateException("A deterministic runtime sequence is already active");
 		}
-		if (minecraft.level != null && minecraft.getSingleplayerServer() != null) {
-			deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
-		}
+		worldSimulation.apply(minecraft, !unfreezeWorld);
+		this.unfreezeWorld = unfreezeWorld;
 		deterministicSequence = true;
 	}
 
@@ -367,7 +378,8 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		cancellation.throwIfCancellationRequested();
 		Throwable failure = cameraMotion == null ? null : closeCaptureScope(cameraMotion);
 		try {
-			closeWorldSimulation();
+			unfreezeWorld = false;
+			updateWorldSimulation();
 			deterministicSequence = false;
 		} catch (Throwable cleanup) {
 			if (failure != null) cleanup.addSuppressed(failure);
@@ -378,12 +390,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		if (failure instanceof RuntimeException runtime) throw runtime;
 		if (failure instanceof Error error) throw error;
 		if (failure != null) throw new IllegalStateException("Failed to restore camera motion", failure);
-	}
-
-	private void closeWorldSimulation() {
-		if (deterministicSimulation == null) return;
-		deterministicSimulation.close();
-		deterministicSimulation = null;
 	}
 
 	@Override
@@ -439,7 +445,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		MinecraftContextController.ContextOperation contextOperation;
 		try {
 			boolean retainedContext = deterministicSequence && request.context().equals(activeContext);
-			if (!retainedContext) closeWorldSimulation();
 			contextOperation = retainedContext ?
 				contexts.beginCurrent(request.context(), cancellation) :
 				contexts.begin(request.context(), cancellation);
@@ -490,9 +495,8 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 			if (!deterministicSequence) {
 				throw new IllegalStateException("A deterministic runtime sequence is required");
 			}
-			if (deterministicSimulation == null) {
-				deterministicSimulation = DeterministicWorldSimulation.begin(minecraft, cancellation);
-			}
+			cancellation.throwIfCancellationRequested();
+			updateWorldSimulation();
 		} catch (Throwable failure) {
 			contexts.release(contextOperation);
 			result.complete(contextRejected(request, unwrap(failure)));

@@ -47,6 +47,8 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
     override fun supportsCameraMotion(): Boolean = host.supportsCameraMotion()
     override fun supportsCameraTranslation(): Boolean = host.supportsCameraTranslation()
 
+    override fun supportsWorldUnfreeze(): Boolean = host.supportsWorldUnfreeze()
+
     override fun cameraMotion(
         request: dev.vibris.api.CameraMotionPlan,
         plans: List<CapturePlan>,
@@ -193,6 +195,9 @@ class ThreadBoundVibrisRuntimeAdapter @JvmOverloads constructor(
 
     override fun beginDeterministicSequence(cancellation: CancellationToken): CompletionStage<Void> =
         trackActivity { onClientTask(Runnable { host.beginDeterministicSequence(cancellation) }, cancellation) }
+
+    override fun beginWorldSequence(cancellation: CancellationToken, unfreezeWorld: Boolean): CompletionStage<Void> =
+        trackActivity { onClientTask(Runnable { host.beginWorldSequence(cancellation, unfreezeWorld) }, cancellation) }
 
     override fun endDeterministicSequence(cancellation: CancellationToken): CompletionStage<Void> =
         trackActivity { onClientTask(Runnable { host.endDeterministicSequence(cancellation) }, cancellation) }

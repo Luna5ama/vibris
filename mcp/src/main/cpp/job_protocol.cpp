@@ -583,6 +583,7 @@ proto::ClientMessage JobProtocol::request(const std::string_view tool_name, cons
     auto* job = message.mutable_submit_job()->mutable_job();
     job->set_job_id(request_id);
     job->set_preset_id(arguments.value("preset_id", std::string{}));
+    job->set_unfreeze_world(arguments.value("unfreeze_world", false));
     job->set_scheduling_group_id(arguments.value("__vibris_workflow_id", std::string{}));
     if (const auto preset = arguments.find("__vibris_preset");
         preset != arguments.end() && preset->is_object()) {

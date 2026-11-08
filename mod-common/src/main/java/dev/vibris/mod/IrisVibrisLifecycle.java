@@ -74,6 +74,16 @@ public final class IrisVibrisLifecycle {
 		}
 	}
 
+	public static void updateWorldSimulation() {
+		MinecraftVibrisRuntimeHost current = host;
+		if (current != null) current.updateWorldSimulation();
+	}
+
+	public static boolean isWorldSimulationFrozen() {
+		MinecraftVibrisRuntimeHost current = host;
+		return current != null && current.isWorldSimulationFrozen();
+	}
+
 	public static void beforeRenderedFrame() {
 		MinecraftVibrisRuntimeHost current = host;
 		if (current != null) current.beforeRenderedFrame(Math.incrementExact(currentFrame()));

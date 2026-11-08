@@ -1016,6 +1016,11 @@ ToolOutcome SynchronousJobRunner::submit_once(std::string_view tool_name, const 
             proto::CAPABILITY_CAMERA_TRANSLATION) == server.capabilities().end()) {
         return ToolFailure{"UNSUPPORTED_ACTION", "The connected runtime does not support camera XYZ translation.", false};
     }
+    if (arguments.value("unfreeze_world", false) &&
+        std::find(server.capabilities().begin(), server.capabilities().end(),
+            proto::CAPABILITY_WORLD_UNFREEZE) == server.capabilities().end()) {
+        return ToolFailure{"UNSUPPORTED_WORLD_UNFREEZE", "The connected runtime does not support unfreeze_world.", false};
+    }
     const auto request_id = detail::generate_uuid();
     report_progress(control.progress, request_id, "loading", false);
     const auto prepare_started = std::chrono::steady_clock::now();

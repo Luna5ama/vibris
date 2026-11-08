@@ -155,6 +155,12 @@ settings, origins, defaults, stable settings hash, and completion-time staleness
 A config without `values`, or an omitted recipe `config`, selects shaderpack defaults. It never preserves settings from
 an earlier request. `vibris_run_matrix` applies that rule independently to every generated source/config case.
 
+Vibris freezes integrated-world ticks on entry and while idle. Rendered frames continue to advance.
+`vibris_run_actions` and `vibris_run_matrix` accept the optional top-level boolean `unfreeze_world`
+(default `false`). With `true`, world ticks advance while the job owns the runtime. Vibris freezes
+the world again when the job finishes, fails, or is cancelled. A durable matrix applies the same
+option to each scheduled runtime lease and returns to the frozen default between leases.
+
 Jobs keep their final world, shader source, and settings after success, failure, or cancellation. Benchmark,
 profile-matrix, compile-validation, preview, and camera-motion jobs do not automatically return to their starting
 state. Requested loads still apply the target scene and reset temporal history as required for the measurement.

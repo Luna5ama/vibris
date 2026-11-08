@@ -4,7 +4,6 @@ import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import com.mojang.blaze3d.platform.FramerateLimitTracker;
 import dev.vibris.mod.VibrisTime;
 import dev.vibris.mod.IrisVibrisLifecycle;
-import dev.vibris.mod.DeterministicWorldSimulation;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -25,6 +24,7 @@ import java.util.function.BooleanSupplier;
 public class MixinMinecraft_VibrisFrameThrottle {
 	@Inject(method = "runTick", at = @At("HEAD"))
 	private void iris$blockUserInputDuringVibrisActivity(boolean tick, CallbackInfo ci) {
+		IrisVibrisLifecycle.updateWorldSimulation();
 		if (!IrisVibrisLifecycle.shouldBlockUserInput()) return;
 
 		Minecraft minecraft = (Minecraft) (Object) this;
@@ -51,7 +51,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$advanceAmbientParticles(ClientLevel level, int x, int y, int z) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@WrapWithCondition(
@@ -63,7 +63,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$advanceParticles(ParticleEngine particleEngine) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@WrapWithCondition(
@@ -75,7 +75,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$advanceGameRenderer(GameRenderer gameRenderer) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@WrapWithCondition(
@@ -87,7 +87,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$tickEntities(ClientLevel level) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@WrapWithCondition(
@@ -99,7 +99,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$tickBlockEntities(ClientLevel level) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@WrapWithCondition(
@@ -111,7 +111,7 @@ public class MixinMinecraft_VibrisFrameThrottle {
 		)
 	)
 	private boolean iris$tickClientWorld(ClientLevel level, BooleanSupplier chunkSupplier) {
-		return !DeterministicWorldSimulation.isActive();
+		return !IrisVibrisLifecycle.isWorldSimulationFrozen();
 	}
 
 	@Redirect(

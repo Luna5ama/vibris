@@ -468,7 +468,8 @@ Json build_definitions() {
                    "Put related multi-image exports into one ordered action sequence instead of waiting for "
                    "an idle lease between images. restore_state defaults to preserve the final source/config on "
                    "success, failure, and cancellation. "
-                   "Explicit restore_state can request a return to the previous state.",
+                   "Explicit restore_state can request a return to the previous state. Set unfreeze_world=true to "
+                   "advance world ticks while this job owns the runtime.",
                    scoped(closed_object({{"sources", named_sources_schema()},
                                          {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}},
                                              {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
@@ -476,6 +477,7 @@ Json build_definitions() {
                                          {"configs", named_configs_schema()},
                                          {"execution", enum_string({"sync", "async"})},
                                          {"restore_state", restore_policy_schema()},
+                                         {"unfreeze_world", {{"type", "boolean"}, {"default", false}}},
                                          {"actions", {{"type", "array"}, {"items", action_schema()}, {"maxItems", 64}}}},
                                         {"actions"}), true), false),
         definition("vibris_run_matrix",
@@ -485,13 +487,15 @@ Json build_definitions() {
                    "explicit Git worktree and scene preset. An async result's next_action is one blocking vibris_job "
                    "operation=wait call; never poll. Use this single call for related config/image exports. "
                    "Each combination "
-                   "automatically begins with load_shader; do not include load_shader in the action template.",
+                   "automatically begins with load_shader; do not include load_shader in the action template. "
+                   "Set unfreeze_world=true to advance world ticks during the matrix runtime leases.",
                    scoped(closed_object({{"sources", named_sources_schema()},
                                          {"preset_id", {{"type", "string"}, {"minLength", 1}}},
                                          {"presets", Json{{"type", "array"}, {"items", {{"type", "string"}, {"minLength", 1}}}, {"minItems", 1}, {"maxItems", 32}, {"uniqueItems", true}}},
                                          {"configs", named_configs_schema()},
                                          {"matrix", matrix_axes_schema()},
                                          {"restore_state", restore_policy_schema()},
+                                         {"unfreeze_world", {{"type", "boolean"}, {"default", false}}},
                                          {"execution", enum_string({"sync", "async"})},
                                          {"actions", {{"type", "array"}, {"items", action_schema()}, {"maxItems", 64}}}},
                                         {"sources", "configs", "matrix", "actions"}), false), false),

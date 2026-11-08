@@ -128,7 +128,21 @@ void exact_filters_and_job_control() {
         {"actions", Json::array({{{"type", "wait_frames"}, {"frames", 1}}})}};
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", m)), "matrix accepted no scene");
     m["preset_id"] = "scene";
+    m["unfreeze_world"] = true;
     require(std::holds_alternative<Json>(registry.invoke("vibris_run_matrix", m)), "matrix rejected preset_id");
+    m["unfreeze_world"] = "true";
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", m)),
+        "matrix accepted a non-boolean unfreeze_world");
+    m["unfreeze_world"] = true;
+    auto actions = scope;
+    actions["preset_id"] = "scene";
+    actions["actions"] = m.at("actions");
+    actions["unfreeze_world"] = true;
+    require(std::holds_alternative<Json>(registry.invoke("vibris_run_actions", actions)),
+        "actions rejected top-level unfreeze_world");
+    actions["actions"][0]["unfreeze_world"] = true;
+    require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_actions", actions)),
+        "an individual action accepted unfreeze_world");
     m["presets"] = Json::array({"scene", "scene2"});
     require(std::holds_alternative<InvocationError>(registry.invoke("vibris_run_matrix", m)), "matrix accepted both selectors");
     m.erase("preset_id");

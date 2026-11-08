@@ -7,6 +7,8 @@ interface VibrisRuntimeAdapter : AutoCloseable {
     fun supportsCameraMotion(): Boolean = false
     fun supportsCameraTranslation(): Boolean = false
 
+    fun supportsWorldUnfreeze(): Boolean = false
+
     fun cameraMotion(
         request: CameraMotionPlan,
         plans: List<CapturePlan>,
@@ -76,6 +78,15 @@ interface VibrisRuntimeAdapter : AutoCloseable {
     ): CompletionStage<DeterministicTemporalCaptureOutcome>
 
     fun beginDeterministicSequence(cancellation: CancellationToken): CompletionStage<Void>
+
+    fun beginWorldSequence(cancellation: CancellationToken, unfreezeWorld: Boolean): CompletionStage<Void> =
+        if (unfreezeWorld) {
+            java.util.concurrent.CompletableFuture.failedFuture(
+                UnsupportedOperationException("This runtime cannot unfreeze world simulation for a job."),
+            )
+        } else {
+            beginDeterministicSequence(cancellation)
+        }
 
     fun endDeterministicSequence(cancellation: CancellationToken): CompletionStage<Void>
 
