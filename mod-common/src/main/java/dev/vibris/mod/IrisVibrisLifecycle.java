@@ -20,6 +20,7 @@ public final class IrisVibrisLifecycle {
 	private static volatile Thread idleWaitThread;
 	private static volatile long idleSinceNanos = Long.MAX_VALUE;
 	private static volatile boolean windowFocused;
+	private static volatile boolean jobActive;
 	private static volatile MinecraftVibrisRuntimeHost host;
 
 	private IrisVibrisLifecycle() {
@@ -48,7 +49,7 @@ public final class IrisVibrisLifecycle {
 					IrisVibrisLifecycle::runtimeActivityChanged);
 				bootstrap = VibrisBootstrap.start(
 					gameDirectory, adapter, MinecraftRestartLauncher::restart,
-					VibrisClient.flameGraph()::setJobActive);
+					IrisVibrisLifecycle::jobActivityChanged);
 				if (bootstrap.pendingShadersRoot() != null) {
 					candidateHost.configureShaderConfigScratch(bootstrap.pendingShadersRoot());
 				}
@@ -72,16 +73,6 @@ public final class IrisVibrisLifecycle {
 				VibrisClient.LOGGER.error("Vibris startup failed; the control service will remain unavailable.", exception);
 			}
 		}
-	}
-
-	public static void updateWorldSimulation() {
-		MinecraftVibrisRuntimeHost current = host;
-		if (current != null) current.updateWorldSimulation();
-	}
-
-	public static boolean isWorldSimulationFrozen() {
-		MinecraftVibrisRuntimeHost current = host;
-		return current != null && current.isWorldSimulationFrozen();
 	}
 
 	public static void beforeRenderedFrame() {
@@ -118,8 +109,7 @@ public final class IrisVibrisLifecycle {
 	}
 
 	public static boolean shouldBlockUserInput() {
-		ThreadBoundVibrisRuntimeAdapter current = runtimeAdapter;
-		return shouldBlockUserInput(current != null, current != null && current.isIdle(), idleSinceNanos, System.nanoTime());
+		return jobActive;
 	}
 
 	public static void windowFocusChanged(boolean focused) {
@@ -152,7 +142,7 @@ public final class IrisVibrisLifecycle {
 
 	private static boolean shouldThrottleIdle() {
 		ThreadBoundVibrisRuntimeAdapter current = runtimeAdapter;
-		return shouldThrottleIdle(windowFocused, current != null, current != null && current.isIdle(),
+		return shouldThrottleIdle(windowFocused, current != null, !jobActive && current != null && current.isIdle(),
 			idleSinceNanos, System.nanoTime());
 	}
 
@@ -161,12 +151,14 @@ public final class IrisVibrisLifecycle {
 		return !focused && runtimeAvailable && idleTimeoutElapsed(runtimeIdle, idleSince, now);
 	}
 
-	static boolean shouldBlockUserInput(boolean runtimeAvailable, boolean runtimeIdle, long idleSince, long now) {
-		return runtimeAvailable && !idleTimeoutElapsed(runtimeIdle, idleSince, now);
-	}
-
 	static boolean idleTimeoutElapsed(boolean runtimeIdle, long idleSince, long now) {
 		return runtimeIdle && idleSince != Long.MAX_VALUE && now - idleSince >= IDLE_TIMEOUT_NANOS;
+	}
+
+	private static void jobActivityChanged(boolean active) {
+		jobActive = active;
+		VibrisClient.flameGraph().setJobActive(active);
+		if (active) wakeIdleWait();
 	}
 
 	private static void runtimeActivityChanged(boolean active) {

@@ -11,20 +11,18 @@ class IrisVibrisLifecycleTest {
 	private static final long TIMEOUT = TimeUnit.SECONDS.toNanos(15);
 
 	@Test
-	void blocksInputAndDoesNotThrottleBeforeIdleTimeout() {
+	void doesNotThrottleBeforeIdleTimeout() {
 		long idleSince = 1_000L;
 		long beforeTimeout = idleSince + TIMEOUT - 1L;
 
-		assertTrue(IrisVibrisLifecycle.shouldBlockUserInput(true, true, idleSince, beforeTimeout));
 		assertFalse(IrisVibrisLifecycle.shouldThrottleIdle(false, true, true, idleSince, beforeTimeout));
 	}
 
 	@Test
-	void throttlesUnfocusedWindowAndAllowsInputAfterIdleTimeout() {
+	void throttlesUnfocusedWindowAfterIdleTimeout() {
 		long idleSince = 1_000L;
 		long timeoutElapsed = idleSince + TIMEOUT;
 
-		assertFalse(IrisVibrisLifecycle.shouldBlockUserInput(true, true, idleSince, timeoutElapsed));
 		assertTrue(IrisVibrisLifecycle.shouldThrottleIdle(false, true, true, idleSince, timeoutElapsed));
 	}
 
@@ -38,8 +36,7 @@ class IrisVibrisLifecycleTest {
 	}
 
 	@Test
-	void activeRuntimeAlwaysBlocksInputAndNeverThrottles() {
-		assertTrue(IrisVibrisLifecycle.shouldBlockUserInput(true, false, Long.MAX_VALUE, Long.MAX_VALUE));
+	void activeRuntimeNeverThrottles() {
 		assertFalse(IrisVibrisLifecycle.shouldThrottleIdle(false, true, false, Long.MAX_VALUE, Long.MAX_VALUE));
 	}
 }

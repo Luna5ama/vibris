@@ -155,7 +155,9 @@ settings, origins, defaults, stable settings hash, and completion-time staleness
 A config without `values`, or an omitted recipe `config`, selects shaderpack defaults. It never preserves settings from
 an earlier request. `vibris_run_matrix` applies that rule independently to every generated source/config case.
 
-Vibris freezes integrated-world ticks on entry and while idle. Rendered frames continue to advance.
+Vibris freezes an integrated world after its rendered terrain has settled. It uses Minecraft's
+`tick freeze` command so client rendering, camera controls and command handling follow vanilla.
+While idle, manual `tick freeze`, `tick unfreeze` and `time set` commands use their normal behavior.
 `vibris_run_actions` and `vibris_run_matrix` accept the optional top-level boolean `unfreeze_world`
 (default `false`). With `true`, world ticks advance while the job owns the runtime. Vibris freezes
 the world again when the job finishes, fails, or is cancelled. A durable matrix applies the same

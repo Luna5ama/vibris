@@ -55,7 +55,7 @@ final class MinecraftContextController {
 			context,
 			cancellation,
 			System.nanoTime() + TIMEOUT_NANOS,
-			new SceneReadyGate(STABLE_RENDERED_FRAMES, STABLE_SCENE_NANOS)
+			sceneReadyGate()
 		);
 		String rejection = null;
 		synchronized (this) {
@@ -82,7 +82,7 @@ final class MinecraftContextController {
 			context,
 			cancellation,
 			System.nanoTime() + TIMEOUT_NANOS,
-			new SceneReadyGate(STABLE_RENDERED_FRAMES, STABLE_SCENE_NANOS)
+			sceneReadyGate()
 		);
 		String rejection = null;
 		synchronized (this) {
@@ -447,6 +447,10 @@ final class MinecraftContextController {
 	private SceneReadiness inspectScene(ContextOperation operation) {
 		String mismatch = clientMismatch(operation.context, operation.resolved);
 		if (mismatch != null) return SceneReadiness.notReady(mismatch);
+		return inspectRenderedTerrain();
+	}
+
+	SceneReadiness inspectRenderedTerrain() {
 		if (minecraft.level == null || minecraft.player == null) {
 			return SceneReadiness.notReady("client world is not ready");
 		}
@@ -737,6 +741,10 @@ final class MinecraftContextController {
 		}
 	}
 
+	static SceneReadyGate sceneReadyGate() {
+		return new SceneReadyGate(STABLE_RENDERED_FRAMES, STABLE_SCENE_NANOS);
+	}
+
 	static final class SceneReadyGate {
 		private final int stableFrames;
 		private final long stableNanos;
@@ -799,7 +807,7 @@ final class MinecraftContextController {
 		}
 	}
 
-	private record SceneReadiness(boolean ready, SceneSignature signature, String mismatch) {
+	record SceneReadiness(boolean ready, SceneSignature signature, String mismatch) {
 		private static SceneReadiness notReady(String mismatch) {
 			return new SceneReadiness(false, null, mismatch);
 		}

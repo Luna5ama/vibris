@@ -87,14 +87,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		shaderConfigScratch = pendingRoot.resolveSibling("config").resolve("vibris.txt");
 	}
 
-	void updateWorldSimulation() {
-		worldSimulation.apply(minecraft, !unfreezeWorld);
-	}
-
-	boolean isWorldSimulationFrozen() {
-		return worldSimulation.isFrozen(minecraft.level);
-	}
-
 	void beforeRenderedFrame(long frameId) {
 		if (cameraMotion != null) cameraMotion.beforeFrame(frameId, System.nanoTime());
 	}
@@ -102,6 +94,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 	void renderedFrameTail(long frameId) {
 		if (cameraMotion != null) cameraMotion.afterFrame(frameId, System.nanoTime());
 		contexts.renderedFrameTail(frameId);
+		if (!deterministicSequence) worldSimulation.renderedFrame(minecraft, contexts, frameId);
 	}
 
 	@Override
@@ -333,13 +326,13 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 			}
 			try {
 				cancellation.throwIfCancellationRequested();
-				updateWorldSimulation();
 				contexts.awaitSceneReady(operation).whenComplete((ready, readyFailure) -> runOnClient(result, () -> {
 					try {
 						contexts.release(operation);
 						if (readyFailure != null) result.completeExceptionally(unwrap(readyFailure));
 						else {
 							if (ready.successful()) {
+								worldSimulation.sceneReady(minecraft, !unfreezeWorld);
 								activeContext = ready.context();
 								IrisVibrisAutomation.contextApplied(ready.context(), minecraft);
 							}
@@ -368,7 +361,8 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		if (deterministicSequence) {
 			throw new IllegalStateException("A deterministic runtime sequence is already active");
 		}
-		worldSimulation.apply(minecraft, !unfreezeWorld);
+		if (unfreezeWorld) worldSimulation.apply(minecraft, false);
+		else worldSimulation.applyIfSettled(minecraft, true);
 		this.unfreezeWorld = unfreezeWorld;
 		deterministicSequence = true;
 	}
@@ -378,8 +372,8 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 		cancellation.throwIfCancellationRequested();
 		Throwable failure = cameraMotion == null ? null : closeCaptureScope(cameraMotion);
 		try {
+			if (unfreezeWorld) worldSimulation.applyIfSettled(minecraft, true);
 			unfreezeWorld = false;
-			updateWorldSimulation();
 			deterministicSequence = false;
 		} catch (Throwable cleanup) {
 			if (failure != null) cleanup.addSuppressed(failure);
@@ -496,7 +490,6 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 				throw new IllegalStateException("A deterministic runtime sequence is required");
 			}
 			cancellation.throwIfCancellationRequested();
-			updateWorldSimulation();
 		} catch (Throwable failure) {
 			contexts.release(contextOperation);
 			result.complete(contextRejected(request, unwrap(failure)));
@@ -690,6 +683,7 @@ public final class MinecraftVibrisRuntimeHost implements VibrisRuntimeHost {
 							));
 							return;
 						}
+						worldSimulation.sceneReady(minecraft, !unfreezeWorld);
 						IrisVibrisAutomation.contextApplied(readyContext.context(), minecraft);
 						startDeterministicTemporalPhaseAfterReload(
 							request, planner, sink, scheduler, cancellation, readyContext, reload, result);

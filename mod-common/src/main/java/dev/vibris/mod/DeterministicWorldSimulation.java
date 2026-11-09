@@ -1,6 +1,5 @@
 package dev.vibris.mod;
 
-import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.server.IntegratedServer;
@@ -8,41 +7,49 @@ import net.minecraft.client.server.IntegratedServer;
 import java.util.concurrent.CompletableFuture;
 
 final class DeterministicWorldSimulation {
-	private IntegratedServer appliedServer;
-	private ClientLevel appliedLevel;
-	private boolean frozen;
+	private final MinecraftContextController.SceneReadyGate gate = MinecraftContextController.sceneReadyGate();
+	private ClientLevel settledLevel;
+
+	void renderedFrame(Minecraft minecraft, MinecraftContextController contexts, long frameId) {
+		ClientLevel level = minecraft.level;
+		if (level == null || minecraft.getSingleplayerServer() == null || minecraft.screen != null) {
+			gate.reset();
+			return;
+		}
+		if (level == settledLevel) return;
+		var readiness = contexts.inspectRenderedTerrain();
+		if (gate.observe(frameId, System.nanoTime(), readiness.ready(), readiness.signature())) {
+			sceneReady(minecraft, true);
+		}
+	}
+
+	void sceneReady(Minecraft minecraft, boolean freeze) {
+		apply(minecraft, freeze);
+		settledLevel = minecraft.level;
+		gate.reset();
+	}
+
+	void applyIfSettled(Minecraft minecraft, boolean freeze) {
+		if (minecraft.level == settledLevel) apply(minecraft, freeze);
+	}
 
 	void apply(Minecraft minecraft, boolean freeze) {
-		RenderSystem.assertOnRenderThread();
 		IntegratedServer server = minecraft.getSingleplayerServer();
-		ClientLevel level = minecraft.level;
-		if (server == null || level == null) {
-			appliedServer = null;
-			appliedLevel = null;
-			return;
-		}
-		if (server == appliedServer && level == appliedLevel && freeze == frozen &&
-			level.tickRateManager().isFrozen() == freeze) {
-			return;
-		}
+		if (server == null || minecraft.level == null) return;
 
 		CompletableFuture<Void> applied = new CompletableFuture<>();
 		server.execute(() -> {
 			try {
-				server.tickRateManager().setFrozen(freeze);
+				server.getCommands().performPrefixedCommand(
+					server.createCommandSourceStack().withSuppressedOutput(), freeze ? "tick freeze" : "tick unfreeze");
+				if (server.tickRateManager().isFrozen() != freeze) {
+					throw new IllegalStateException("Minecraft did not apply the requested tick state");
+				}
 				applied.complete(null);
 			} catch (Throwable failure) {
 				applied.completeExceptionally(failure);
 			}
 		});
 		applied.join();
-		level.tickRateManager().setFrozen(freeze);
-		appliedServer = server;
-		appliedLevel = level;
-		frozen = freeze;
-	}
-
-	boolean isFrozen(ClientLevel level) {
-		return level != null && appliedLevel == level && frozen;
 	}
 }
