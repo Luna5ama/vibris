@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -11,7 +12,7 @@ namespace vibris::mcp {
 
 class McpBackend final {
 public:
-    explicit McpBackend(std::string server_address);
+    explicit McpBackend(std::string server_address, std::filesystem::path startup_config = {});
     ~McpBackend();
 
     McpBackend(const McpBackend&) = delete;

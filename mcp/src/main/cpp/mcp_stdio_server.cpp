@@ -191,14 +191,15 @@ void McpStdioServer::handle_line(std::string_view line) {
         }
         const auto arguments = params.value("arguments", Json::object());
         const auto name = params["name"].get<std::string>();
-        if (name == "vibris_job" && arguments.value("operation", Json{}) == "wait") {
+        if (name == "vibris_ensure_runtime" ||
+            (name == "vibris_job" && arguments.value("operation", Json{}) == "wait")) {
             std::erase_if(waits_, [](auto& wait) {
                 if (wait.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
                 wait.get();
                 return true;
             });
             if (waits_.size() >= 8) {
-                write(error_response(id, -32000, "Too many concurrent job waits.",
+                write(error_response(id, -32000, "Too many concurrent waits.",
                     {{"code", "WAIT_CAPACITY"}, {"retryable", true}}));
                 return;
             }

@@ -24,6 +24,7 @@
 #include "image_compare.hpp"
 #include "profile_matrix_workflow.hpp"
 #include "result_mapper.hpp"
+#include "runtime_start.hpp"
 #include "scene_context_resolver.hpp"
 #include "job_context.hpp"
 #include "nsight_analyzer.hpp"
@@ -244,7 +245,7 @@ private:
                 if (!accepted) return ToolFailure{"QUEUE_FULL", "The bounded gRPC request registry is full.", true};
                 if (result.wait_until(deadline) != std::future_status::ready) {
                     return ToolFailure{"SERVER_OFFLINE",
-                        "The local Vibris server remained unreachable for five minutes.", true};
+                        "The local Vibris server did not answer within the status or request deadline.", true};
                 }
                 auto [status, response] = result.get();
                 if (status.ok()) return std::forward<Map>(map)(response);
@@ -398,10 +399,11 @@ private:
 
         ToolOutcome get_status(const Json& arguments) {
             control::GetStatusRequest request;
+            const bool wait_for_condition = arguments.contains("wait_until");
             const auto detail = arguments.value("detail", std::string("summary"));
             request.set_detail(detail == "full" ? control::STATUS_DETAIL_FULL :
                 detail == "jobs" ? control::STATUS_DETAIL_JOBS : control::STATUS_DETAIL_SUMMARY);
-            if (arguments.contains("wait_until")) {
+            if (wait_for_condition) {
                 request.set_wait_until(arguments.at("wait_until") == "job_terminal"
                     ? control::STATUS_WAIT_CONDITION_JOB_TERMINAL
                     : control::STATUS_WAIT_CONDITION_CAN_ACCEPT_JOB);
@@ -415,7 +417,8 @@ private:
                 [](const auto& response) -> ToolOutcome {
                     auto mapped = ResultMapper::status(response);
                     return mapped.contains("status") && mapped["status"].is_object() ? mapped["status"] : mapped;
-                });
+                }, wait_for_condition ? unary_wait + std::chrono::seconds(1) : std::chrono::seconds(6),
+                wait_for_condition);
         }
 
         ToolOutcome restart(const Json& arguments) {
@@ -653,7 +656,8 @@ private:
     };
 
 public:
-    explicit Impl(std::string server_address) : server_address_(std::move(server_address)) {}
+    Impl(std::string server_address, fs::path startup_config)
+        : server_address_(std::move(server_address)), startup_(server_address_, std::move(startup_config)) {}
 
     ToolOutcome dispatch(std::string_view name, const Json& arguments) {
         try {
@@ -665,7 +669,8 @@ public:
             auto scoped = arguments;
             scoped.erase("worktree_root");
             auto& runtime = workspace(binding);
-            auto outcome = runtime.dispatch(name, scoped);
+            auto outcome = name == "vibris_ensure_runtime" ? startup_.ensure_online(scoped)
+                                                            : runtime.dispatch(name, scoped);
             runtime.attach_scope(outcome);
             return outcome;
         } catch (const StateError& error) {
@@ -677,6 +682,7 @@ public:
     }
 
     void interrupt_waits() {
+        startup_.interrupt();
         std::scoped_lock lock(workspace_mutex_);
         waits_interrupted_ = true;
         for (auto& [root, runtime] : workspaces_) runtime->interrupt_waits();
@@ -716,14 +722,15 @@ private:
     }
 
     std::string server_address_;
+    RuntimeStart startup_;
     std::mutex workspace_mutex_;
     std::map<fs::path, std::unique_ptr<WorkspaceRuntime>> workspaces_;
     bool waits_interrupted_ = false; // Protected by workspace_mutex_.
     bool shutdown_ = false;
 };
 
-McpBackend::McpBackend(std::string server_address)
-    : impl_(std::make_unique<Impl>(std::move(server_address))) {}
+McpBackend::McpBackend(std::string server_address, fs::path startup_config)
+    : impl_(std::make_unique<Impl>(std::move(server_address), std::move(startup_config))) {}
 
 McpBackend::~McpBackend() = default;
 

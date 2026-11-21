@@ -293,6 +293,7 @@ try
     $listed = @($toolsResponse.result.tools | ForEach-Object { $_.name })
     $expectedTools = @(
         "vibris_get_status",
+        "vibris_ensure_runtime",
         "vibris_restart",
         "vibris_list_presets",
         "vibris_list_resources",

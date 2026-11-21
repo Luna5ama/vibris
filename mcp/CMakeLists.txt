@@ -132,6 +132,7 @@ add_library(vibris_mcp_core STATIC
     src/main/cpp/source_delivery.cpp
     src/main/cpp/prepared_source.cpp
     src/main/cpp/result_mapper.cpp
+    src/main/cpp/runtime_start.cpp
     src/main/cpp/scene_context_resolver.cpp
     src/main/cpp/source_path_policy.cpp
     src/main/cpp/source_preparer.cpp
@@ -147,7 +148,12 @@ target_link_libraries(vibris_mcp_core PUBLIC
     LibArchive::LibArchive
     nlohmann_json::nlohmann_json
     Advapi32
-    Bcrypt)
+    Bcrypt
+    Iphlpapi
+    Ole32
+    OleAut32
+    Shell32
+    Wbemuuid)
 
 add_executable(vibris-mcp src/main/cpp/main.cpp)
 target_link_libraries(vibris-mcp PRIVATE vibris_mcp_core)
@@ -465,6 +471,14 @@ if(BUILD_TESTING)
     add_stdio_mcp_probe(RestartRetainsWorkspaceIdentity)
     add_stdio_mcp_probe(FakeServerStatus)
     add_stdio_mcp_probe(StdioLifecycle)
+
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME StdioDedicatedRuntimeStartup
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/src/test/runtime_start_test.py"
+                "$<TARGET_FILE:vibris-mcp>" "$<TARGET_FILE:vibris-stdio-v2-server>")
+        set_tests_properties(StdioDedicatedRuntimeStartup PROPERTIES RUN_SERIAL TRUE TIMEOUT 80)
+    endif()
 
     if(VIBRIS_ENABLE_SANITIZERS AND VIBRIS_SANITIZER_RUNTIME_DIR)
         get_property(VIBRIS_TESTS DIRECTORY PROPERTY TESTS)

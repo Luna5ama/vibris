@@ -3,11 +3,14 @@
 #include <grpcpp/grpcpp.h>
 
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -16,6 +19,7 @@ namespace proto = ::vibris::control::v2;
 struct Options final {
     std::uint16_t port = 0;
     std::filesystem::path work_root;
+    bool startup_fixture = false;
 };
 
 Options parse_options(const int argc, char** argv) {
@@ -28,6 +32,9 @@ Options parse_options(const int argc, char** argv) {
             options.port = static_cast<std::uint16_t>(value);
         } else if (argument == "--work-root" && index + 1 < argc) {
             options.work_root = std::filesystem::absolute(argv[++index]).lexically_normal();
+        } else if (argument == "--gameDir" && index + 1 < argc) {
+            ++index; // Exercised by the production process-identity check.
+            options.startup_fixture = true;
         } else {
             throw std::invalid_argument("unknown fixture argument");
         }
@@ -158,7 +165,7 @@ private:
         return {grpc::StatusCode::FAILED_PRECONDITION, "UNSUPPORTED_VERSION"};
     }
 
-    static void fill_status(proto::ServerStatus& status) {
+    void fill_status(proto::ServerStatus& status) const {
         status.set_state(proto::SERVER_STATE_AVAILABLE);
         status.set_can_accept_job(true);
         status.set_can_start_job(true);
@@ -171,6 +178,10 @@ private:
         readiness->set_gpu_timing_available(true);
         readiness->set_phase(proto::RUNTIME_PHASE_AVAILABLE);
         readiness->set_detail("test-save minecraft:overworld");
+        if (std::filesystem::exists(pending_root_.parent_path() / "restart")) {
+            status.set_can_accept_job(false);
+            status.mutable_restart()->set_phase(proto::RESTART_PHASE_DRAINING);
+        }
     }
 
     std::filesystem::path pending_root_;
@@ -181,13 +192,29 @@ private:
 int main(const int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
+        if (options.startup_fixture) {
+            std::ofstream(options.work_root / "launches", std::ios::app) << "started\n";
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            while (!std::filesystem::exists(options.work_root / "bind")) {
+                if (std::chrono::steady_clock::now() >= deadline) return 3;
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+        }
         FixtureService service(options.work_root);
         grpc::ServerBuilder builder;
         builder.AddListeningPort("127.0.0.1:" + std::to_string(options.port), grpc::InsecureServerCredentials());
         builder.RegisterService(&service);
         auto server = builder.BuildAndStart();
         if (!server) throw std::runtime_error("could not start v2 stdio fixture server");
-        server->Wait();
+        if (options.startup_fixture) {
+            while (!std::filesystem::exists(options.work_root / "exit")) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            server->Shutdown();
+            std::ofstream(options.work_root / "stopped", std::ios::app) << "stopped\n";
+        } else {
+            server->Wait();
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -408,6 +408,15 @@ Json build_definitions() {
                        {"job_id", {{"type", "string"}, {"minLength", 1}}},
                        {"timeout_ms", bounded_integer(0, 300'000)},
                    }), false), true),
+        definition("vibris_ensure_runtime",
+                   "Ensure the deployment's dedicated local Minecraft instance is online. "
+                   "Reuses the verified instance if online, waits during startup or planned restart, "
+                   "and requests a cold start only when the instance is stopped. "
+                   "After success use vibris_get_status for this worktree's job admission. "
+                   "Retry a STARTUP_PENDING response with this same tool.",
+                   scoped(closed_object({
+                       {"timeout_ms", bounded_integer(0, 180'000)},
+                   }), false), false),
         definition("vibris_restart",
                    "Schedule one graceful Minecraft restart for the explicit Git worktree's connected runtime "
                    "using restart_executable from server.json. "

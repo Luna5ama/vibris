@@ -53,6 +53,7 @@ paths resolve from the selected game directory exactly as written.
 The MCP publishes twelve tools:
 
 - `vibris_get_status`
+- `vibris_ensure_runtime`
 - `vibris_restart`
 - `vibris_list_presets`
 - `vibris_list_resources`
@@ -88,6 +89,38 @@ sequence or one `vibris_run_matrix` request.
 
 If a control stream reports `RST_STREAM` after submission, the MCP reconnects and resumes the accepted request by
 request ID. Do not resubmit blindly and do not wait for the current lease to become idle.
+
+`vibris_ensure_runtime` is the Windows on-demand lifecycle tool. Start with a plain `vibris_get_status`. When Core
+is offline and the dedicated instance is needed, call `vibris_ensure_runtime` with the same `worktree_root`.
+Its optional `timeout_ms` defaults to 45000 and accepts 0–180000. Zero performs one observation and can
+request a start. On `STARTUP_PENDING`, call the same tool again to continue waiting. An online result includes
+the verified process ID and status. Use `vibris_get_status` for the worktree's normal job admission after that.
+
+Configure the MCP host command with `--server-address 127.0.0.1:50051 --startup-config ABSOLUTE_FILE`.
+Keep this JSON in a deployment-controlled directory outside consumer worktrees. For example:
+
+```json
+{
+  "game_directory": "C:/Minecraft/dedicated-instance",
+  "observed_launcher": "C:/Minecraft/Existing Launcher.exe",
+  "launcher_executable": "C:/VibrisDeployment/ApprovedProfileLauncher.exe",
+  "launcher_arguments": ["--launch", "dedicated-instance"]
+}
+```
+
+`launcher_executable` and `launcher_arguments` configure a fixed native launcher entry that starts the designated
+profile using its normal login. Keep credentials out of the configuration. Omitting both enables verification only.
+`observed_launcher` is optional and conservatively prevents dispatch while that launcher is open and no Core has
+handshaken. `legacy_restart_entry` is an optional absolute path used solely to identify the existing graceful restart
+helper's command interpreter. The cold-start path never opens or invokes this file.
+
+The bridge matches the port owner to the game's absolute `--gameDir` (or the trusted launcher's JVM argument
+`-Dvibris.launch.gameDirectory=ABSOLUTE_GAME_DIRECTORY`) before accepting Core's status. An exclusive Windows
+file handle and durable receipt under `config/vibris/mcp-start.guard` serialize starts across stdio clients and
+preserve a pending start after EOF. An unresolved receipt becomes `STARTUP_UNCONFIRMED` when the pending window
+expires without a proven process. An operator can remove the guard after independently checking that the target
+game and its launcher/restart helpers have stopped and that no ensure call is in flight. A verified connection
+clears the receipt automatically. `vibris_get_status` does not create the guard or start a process.
 
 `vibris_restart` is a top-level lifecycle control, never a run action. Core immediately closes new admission, broadcasts
 `ServerShuttingDown` to every connected MCP, drains every already accepted queued or active job without cancelling it,

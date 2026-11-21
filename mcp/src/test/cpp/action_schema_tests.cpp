@@ -61,6 +61,7 @@ void exact_v2_tool_catalog() {
     const ToolRegistry registry;
     const std::array expected{
         "vibris_get_status",
+        "vibris_ensure_runtime",
         "vibris_restart",
         "vibris_list_presets",
         "vibris_list_resources",
@@ -111,6 +112,11 @@ void exact_v2_tool_catalog() {
             require(description.find("already accepted") != std::string::npos &&
                     description.find("wait") != std::string::npos,
                 "vibris_restart omitted graceful drain and retry guidance");
+        }
+        if (name == "vibris_ensure_runtime") {
+            const auto& hints = tool.at("annotations");
+            require(hints.at("readOnlyHint") == false && hints.at("destructiveHint") == false,
+                "vibris_ensure_runtime must disclose its start effect without permitting restart");
         }
     }
     require(names == std::unordered_set<std::string>(expected.begin(), expected.end()),

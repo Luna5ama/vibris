@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@ constexpr std::size_t pending_limit = 256;
 struct LaunchOptions final {
     std::string server_address = "127.0.0.1:50051";
     bool server_address_set = false;
+    std::filesystem::path startup_config;
 };
 
 LaunchOptions parse_options(int argc, char** argv) {
@@ -25,8 +27,14 @@ LaunchOptions parse_options(int argc, char** argv) {
         if (argument == "--server-address" && !options.server_address_set && index + 1 < argc) {
             options.server_address = argv[++index];
             options.server_address_set = true;
+        } else if (argument == "--startup-config" && options.startup_config.empty() && index + 1 < argc) {
+            options.startup_config = argv[++index];
+            if (!options.startup_config.is_absolute()) {
+                throw std::invalid_argument("startup config must be an absolute deployment path");
+            }
         } else {
-            throw std::invalid_argument("usage: vibris-mcp [--server-address LOOPBACK:PORT]");
+            throw std::invalid_argument(
+                "usage: vibris-mcp [--server-address LOOPBACK:PORT] [--startup-config ABSOLUTE_FILE]");
         }
     }
     if (options.server_address.empty()) throw std::invalid_argument("server address must not be empty");
@@ -44,7 +52,7 @@ std::string bounded(std::string value) {
 int main(int argc, char** argv) {
     try {
         auto options = parse_options(argc, argv);
-        vibris::mcp::McpBackend backend(std::move(options.server_address));
+        vibris::mcp::McpBackend backend(std::move(options.server_address), std::move(options.startup_config));
         const vibris::mcp::ToolRegistry tools(
             [&backend](std::string_view name, const vibris::mcp::Json& arguments) {
                 return backend.dispatch(name, arguments);
