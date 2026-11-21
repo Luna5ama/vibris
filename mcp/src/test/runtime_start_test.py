@@ -126,6 +126,16 @@ def run(exe, fixture, root):
     manifest.write_text(json.dumps({
         "game_directory": str(game), "launcher_executable": str(game_exe), "launcher_arguments": arguments,
     }), encoding="utf-8")
+    batch = root / "configured restart entry.bat"
+    batch.write_text(
+        f'@echo off\n"%~dp0java.exe" --port {port} --work-root "%~dp0{state.name}" --gameDir "%~dp0{game.name}"\n',
+        encoding="ascii",
+    )
+    server_config = game_config / "server.json"
+    batch_manifest = root / "startup-using-restart.json"
+    batch_manifest.write_text(json.dumps({
+        "game_directory": str(game), "legacy_restart_entry": str(batch), "use_configured_restart_entry": True,
+    }), encoding="utf-8")
     launches = state / "launches"
     bind = state / "bind"
     restart = state / "restart"
@@ -152,8 +162,13 @@ def run(exe, fixture, root):
             return mcp
 
         try:
-            a = client()
-            b = client()
+            a = client(batch_manifest)
+            b = client(batch_manifest)
+            server_config.write_text(json.dumps({"restart_executable": str(game_exe)}), encoding="utf-8")
+            mismatch = a.tool(workspace_a, timeout_ms=0)
+            assert_error(a.receive(mismatch), "STARTUP_NOT_CONFIGURED")
+            assert not launch_guard.exists()
+            server_config.write_text(json.dumps({"restart_executable": str(batch)}), encoding="utf-8")
             disabled = client(None)
             missing = disabled.tool(workspace_a, timeout_ms=0)
             assert_error(disabled.receive(missing), "STARTUP_NOT_CONFIGURED")
@@ -198,7 +213,7 @@ def run(exe, fixture, root):
             assert_error(a.receive(first), "STARTUP_PENDING")
             assert_error(b.receive(second), "STARTUP_PENDING")
 
-            abandoned = client()
+            abandoned = client(batch_manifest)
             abandoned.tool(workspace_b, timeout_ms=180_000)
             abandoned.close()
             assert launch_count() == 1
@@ -243,8 +258,9 @@ def run(exe, fixture, root):
             stop.touch()
             replacement.wait(timeout=10)
             stop.unlink()
-            cold_again = a.tool(workspace_a, timeout_ms=10_000)
-            later = assert_success(a.receive(cold_again))
+            native = client()
+            cold_again = native.tool(workspace_a, timeout_ms=10_000)
+            later = assert_success(native.receive(cold_again))
             assert later["launched_by_this_call"] and later["status"]["operational"] and launch_count() == 3
             stop.touch()
             await_condition(lambda: stop_count() == 3, "second cold start did not stop")
@@ -252,8 +268,8 @@ def run(exe, fixture, root):
             expired = a.tool(workspace_a, timeout_ms=0)
             assert_error(a.receive(expired), "STARTUP_UNCONFIRMED")
             assert launch_count() == 3
-            print("Verified offline read-only status, input rejection, wrong listener, concurrent startup, "
-                  "timeout/EOF retry, cross-worktree handshake, planned replacement and unresolved receipt.")
+            print("Verified the deployed restart batch match, concurrent batch startup, timeout/EOF retry, "
+                  "cross-worktree handshake, planned replacement, native launch and unresolved receipt.")
         finally:
             if launch_count() > stop_count():
                 stop.touch()

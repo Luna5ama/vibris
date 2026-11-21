@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cwchar>
@@ -45,6 +46,7 @@ struct Deployment {
     fs::path observed_launcher;
     fs::path legacy_restart;
     std::vector<std::wstring> launcher_arguments;
+    bool use_configured_restart_entry = false;
 };
 
 fs::path utf8_path(std::string_view value) {
@@ -52,7 +54,9 @@ fs::path utf8_path(std::string_view value) {
 }
 
 fs::path path_field(const Json& json, const char* key) {
-    auto path = utf8_path(json.at(key).get<std::string>());
+    const auto value = json.at(key).get<std::string>();
+    if (value.find('\0') != std::string::npos) throw std::invalid_argument("Invalid deployment path.");
+    auto path = utf8_path(value);
     if (!path.is_absolute() || path.root_name().native().size() != 2) {
         throw std::invalid_argument("Expected an absolute local drive path.");
     }
@@ -62,6 +66,27 @@ fs::path path_field(const Json& json, const char* key) {
 bool same_file(const fs::path& left, const fs::path& right) {
     std::error_code error;
     return fs::equivalent(left, right, error) && !error;
+}
+
+fs::path configured_restart_batch(const Deployment& deployment) {
+    const auto config_path = deployment.game / "config" / "vibris" / "server.json";
+    if (deployment.legacy_restart.empty() || !fs::is_regular_file(config_path) ||
+        fs::file_size(config_path) > 128 * 1024) {
+        throw std::invalid_argument("The deployed restart entry must match the dedicated game's server.json.");
+    }
+    std::ifstream config(config_path, std::ios::binary);
+    const auto restart = path_field(Json::parse(config), "restart_executable");
+    if (!same_file(restart, deployment.legacy_restart) ||
+        !fs::is_regular_file(fs::symlink_status(deployment.legacy_restart))) {
+        throw std::invalid_argument("The deployed restart entry must be the configured ordinary file.");
+    }
+    const auto batch = fs::canonical(deployment.legacy_restart);
+    const auto extension = batch.extension().native();
+    if ((_wcsicmp(extension.c_str(), L".bat") != 0 && _wcsicmp(extension.c_str(), L".cmd") != 0) ||
+        batch.native().find_first_of(L"\"%!&|<>^()\r\n") != std::wstring::npos) {
+        throw std::invalid_argument("Expected a batch path without command interpreter metacharacters.");
+    }
+    return batch;
 }
 
 Deployment load_deployment(const fs::path& path) {
@@ -74,7 +99,8 @@ Deployment load_deployment(const fs::path& path) {
     for (const auto& field : json.items()) {
         const auto& key = field.key();
         if (key != "game_directory" && key != "launcher_executable" && key != "launcher_arguments" &&
-            key != "observed_launcher" && key != "legacy_restart_entry") {
+            key != "observed_launcher" && key != "legacy_restart_entry" &&
+            key != "use_configured_restart_entry") {
             throw std::invalid_argument("Unexpected startup configuration field.");
         }
     }
@@ -103,6 +129,14 @@ Deployment load_deployment(const fs::path& path) {
     }
     if (json.contains("legacy_restart_entry")) {
         deployment.legacy_restart = path_field(json, "legacy_restart_entry").lexically_normal();
+    }
+    deployment.use_configured_restart_entry = json.value("use_configured_restart_entry", false);
+    if (deployment.use_configured_restart_entry) {
+        if (!deployment.launcher.empty() || json.contains("launcher_arguments")) {
+            throw std::invalid_argument("Choose either the configured restart entry or a native launcher.");
+        }
+        deployment.launcher = configured_restart_batch(deployment);
+        deployment.legacy_restart = deployment.launcher;
     }
     if (!fs::is_directory(deployment.game / "config" / "vibris")) {
         throw std::invalid_argument("The dedicated game directory is missing config/vibris.");
@@ -311,6 +345,7 @@ struct ProcessObservation {
     std::vector<DWORD> target_java;
     bool launcher_open = false;
     bool planned_restart = false;
+    bool restart_batch_running = false;
     bool ambiguous = false;
 };
 
@@ -384,7 +419,7 @@ ProcessObservation inspect_processes(const Deployment& deployment) {
             const auto& restart = deployment.legacy_restart.native();
             for (std::size_t i = 0; i + restart.size() <= normalized.size(); ++i) {
                 if (equal_ci(std::wstring_view(normalized).substr(i, restart.size()), restart)) {
-                    found.planned_restart = true;
+                    found.restart_batch_running = true;
                     break;
                 }
             }
@@ -394,13 +429,30 @@ ProcessObservation inspect_processes(const Deployment& deployment) {
 }
 
 bool launch_profile(const Deployment& deployment) {
-    // The configured executable and literal arguments bypass shell interpretation.
-    std::wstring command = quote_git_argument(deployment.launcher.native());
-    for (const auto& argument : deployment.launcher_arguments) command += L' ' + quote_git_argument(argument);
+    auto application = deployment.launcher;
+    std::wstring command;
+    DWORD flags = 0;
+    if (deployment.use_configured_restart_entry) {
+        std::array<wchar_t, MAX_PATH> system_directory{};
+        const auto count = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+        if (count == 0) return false;
+        if (count >= system_directory.size()) {
+            SetLastError(ERROR_INSUFFICIENT_BUFFER);
+            return false;
+        }
+        application = fs::path(system_directory.data()) / "cmd.exe";
+        // Echo/output stay in the launcher. The MCP never opens the batch or passes caller arguments to cmd.
+        command = quote_git_argument(application.native()) + L" /d /v:off /s /c \"\"" +
+            deployment.launcher.native() + L"\"\"";
+        flags = CREATE_NO_WINDOW;
+    } else {
+        command = quote_git_argument(application.native());
+        for (const auto& argument : deployment.launcher_arguments) command += L' ' + quote_git_argument(argument);
+    }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION child{};
-    if (!CreateProcessW(deployment.launcher.c_str(), command.data(), nullptr, nullptr, FALSE, 0,
+    if (!CreateProcessW(application.c_str(), command.data(), nullptr, nullptr, FALSE, flags,
             nullptr, deployment.launcher.parent_path().c_str(), &startup, &child)) return false;
     const Handle process(child.hProcess);
     const Handle thread(child.hThread);
@@ -494,9 +546,9 @@ ToolOutcome RuntimeStart::ensure_online(const Json& arguments) const {
                         return ToolFailure{"STARTUP_HANDSHAKE_FAILED",
                             "The dedicated game did not accept the MCP status protocol.", false};
                     }
-                } else if (observed.planned_restart) {
+                } else if (observed.planned_restart || observed.restart_batch_running) {
                     if (!receipt) guard.set_receipt(unix_seconds());
-                    phase = "planned_restart";
+                    phase = observed.planned_restart ? "planned_restart" : "waiting_for_launcher";
                 } else if (!observed.target_java.empty()) {
                     phase = "waiting_for_handshake";
                 } else if (observed.ambiguous) {
@@ -511,7 +563,7 @@ ToolOutcome RuntimeStart::ensure_online(const Json& arguments) const {
                     phase = observed.launcher_open ? "launcher_open" : "launch_requested";
                 } else if (deployment.launcher.empty()) {
                     return ToolFailure{"STARTUP_LAUNCH_NOT_CONFIGURED",
-                        "The dedicated instance is stopped. Configure a trusted native launcher entry for its profile "
+                        "The dedicated instance is stopped. Configure a trusted launcher entry for its profile "
                         "or start that profile normally and call this tool to verify the connection.", false};
                 } else {
                     if (interrupted_.load()) break;

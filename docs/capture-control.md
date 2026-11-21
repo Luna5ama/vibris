@@ -109,10 +109,17 @@ Keep this JSON in a deployment-controlled directory outside consumer worktrees. 
 ```
 
 `launcher_executable` and `launcher_arguments` configure a fixed native launcher entry that starts the designated
-profile using its normal login. Keep credentials out of the configuration. Omitting both enables verification only.
+profile using its normal login. Keep credentials out of the configuration. A deployment with neither launch mode
+verifies existing instances and waits for a handshake.
 `observed_launcher` is optional and conservatively prevents dispatch while that launcher is open and no Core has
-handshaken. `legacy_restart_entry` is an optional absolute path used solely to identify the existing graceful restart
-helper's command interpreter. The cold-start path never opens or invokes this file.
+handshaken. `legacy_restart_entry` is an optional absolute path used to identify the existing graceful restart
+helper's command interpreter.
+
+To use the same batch file for cold starts, pin its absolute path as `legacy_restart_entry` and explicitly set
+`"use_configured_restart_entry": true` in the MCP deployment file. The path must match the dedicated game's
+`config/vibris/server.json` value for `restart_executable`. This mode accepts ordinary `.bat` and `.cmd` files
+and is exclusive with `launcher_executable` and `launcher_arguments`. The bridge executes the fixed file with the
+Windows system command interpreter without reading the batch or giving it worktree data or tool arguments.
 
 The bridge matches the port owner to the game's absolute `--gameDir` (or the trusted launcher's JVM argument
 `-Dvibris.launch.gameDirectory=ABSOLUTE_GAME_DIRECTORY`) before accepting Core's status. An exclusive Windows
