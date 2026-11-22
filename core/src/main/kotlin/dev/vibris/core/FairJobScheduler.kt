@@ -11,6 +11,7 @@ internal class FairJobScheduler(
     private val maxGroupTurnDurationMs: Long = MAX_GROUP_TURN_DURATION_MS,
     private val continuationGraceMs: Long = CONTINUATION_GRACE_MS,
     private val nanoTime: () -> Long = System::nanoTime,
+    private val queueIdle: () -> Unit = {},
 ) : AutoCloseable {
     private val queues = LinkedHashMap<String, ArrayDeque<Entry>>()
     private val workspaceRing = ArrayDeque<String>()
@@ -129,12 +130,20 @@ internal class FairJobScheduler(
     }
 
     private fun workLoop() {
+        var reportIdle = true
         while (true) {
-            val job = try {
-                take()
+            val next = try {
+                take(reportIdle)
             } catch (_: InterruptedException) {
                 continue
             } ?: return
+            if (next === Idle) {
+                reportIdle = false
+                queueIdle()
+                continue
+            }
+            val job = next as Entry
+            reportIdle = true
 
             stateChanged()
             try {
@@ -152,9 +161,9 @@ internal class FairJobScheduler(
 
     @Synchronized
     @Throws(InterruptedException::class)
-    private fun take(): Entry? {
+    private fun take(reportIdle: Boolean): Next? {
         while (true) {
-            if (closed && queued == 0) return null
+            if (closed && queued == 0) return if (reportIdle) Idle else null
             val now = nanoTime()
             takeContinuation(now)?.let { return it }
             continuationWaitNanos(now).takeIf { it > 0 }?.let {
@@ -162,6 +171,7 @@ internal class FairJobScheduler(
                 continue
             }
             if (workspaceRing.isEmpty()) {
+                if (reportIdle) return Idle
                 monitorWait()
                 continue
             }
@@ -333,8 +343,12 @@ internal class FairJobScheduler(
     @JvmRecord
     data class Submission(val accepted: Boolean, val position: Int)
 
+    private sealed interface Next
+
+    private data object Idle : Next
+
     @JvmRecord
-    private data class Entry(val metadata: JobMetadata, val task: Runnable)
+    private data class Entry(val metadata: JobMetadata, val task: Runnable) : Next
 
     private data class GroupTurn(
         val workspaceId: String,

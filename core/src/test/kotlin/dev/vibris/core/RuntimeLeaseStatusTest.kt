@@ -48,31 +48,51 @@ class RuntimeLeaseStatusTest {
         val runtime = RuntimeTestAdapter()
         val pending = temp.resolve("observer-pending").toAbsolutePath()
         Files.createDirectories(pending)
-        val events = CopyOnWriteArrayList<Boolean>()
+        val events = CopyOnWriteArrayList<String>()
+        val startupIdle = CountDownLatch(1)
+        val drained = CountDownLatch(1)
         val engine = VibrisCoreEngine(
             pending,
             runtime,
             ShaderLink.transientLink(),
             ShaderLogSink.none(),
-            jobActivityObserver = JobActivityObserver(events::add),
+            jobActivityObserver = object : JobActivityObserver {
+                override fun activityChanged(active: Boolean) = error("identity-free event")
+
+                override fun executionStarted(job: JobActivityObserver.Execution) {
+                    events.add("start:${job.jobId}")
+                }
+
+                override fun executionFinished(job: JobActivityObserver.Execution) {
+                    events.add("finish:${job.jobId}")
+                }
+
+                override fun queueIdle() {
+                    events.add("idle")
+                    if (startupIdle.count != 0L) startupIdle.countDown() else drained.countDown()
+                }
+            },
         )
         val firstReload = CompletableFuture<ReloadResult>()
         runtime.reloadStages.add(firstReload)
         val first = recordingSession()
         val second = recordingSession()
 
+        assertTrue(startupIdle.await(2, TimeUnit.SECONDS))
         engine.submit(first.session, loadJob("observer-first", source(pending), false))
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-        while (events.isEmpty() && System.nanoTime() < deadline) Thread.onSpinWait()
+        while (events.size < 2 && System.nanoTime() < deadline) Thread.onSpinWait()
         engine.submit(second.session, loadJob("observer-second", source(pending), false))
 
-        assertEquals(listOf(true), events)
+        assertEquals(listOf("idle", "start:observer-first"), events)
         engine.statusSnapshot()
-        assertEquals(listOf(true), events)
+        assertEquals(listOf("idle", "start:observer-first"), events)
         firstReload.complete(ReloadResult.success(EffectiveShaderSettings.empty(), emptyList()))
         assertTrue(first.terminal.await(2, TimeUnit.SECONDS))
         assertTrue(second.terminal.await(2, TimeUnit.SECONDS))
-        assertEquals(listOf(true, false, true, false), events)
+        assertTrue(drained.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf("idle", "start:observer-first", "finish:observer-first",
+            "start:observer-second", "finish:observer-second", "idle"), events)
         engine.close()
     }
 

@@ -16,6 +16,7 @@ public final class IrisVibrisLifecycle {
 	private static final ThreadLocal<Boolean> IDLE_LIMIT_SELECTED = ThreadLocal.withInitial(() -> false);
 	private static RenderedFrameClock frames;
 	private static VibrisBootstrap bootstrap;
+	private static WindowsGpuScheduling.Binding gpuScheduling;
 	private static volatile ThreadBoundVibrisRuntimeAdapter runtimeAdapter;
 	private static volatile Thread idleWaitThread;
 	private static volatile long idleSinceNanos = Long.MAX_VALUE;
@@ -40,6 +41,7 @@ public final class IrisVibrisLifecycle {
 			if (bootstrap != null) return;
 			RenderedFrameClock candidateFrames = new RenderedFrameClock();
 			ThreadBoundVibrisRuntimeAdapter adapter = null;
+			WindowsGpuScheduling.Binding priority = null;
 			try {
 				Path gameDirectory = VibrisPlatform.getInstance().gameDirectory().toAbsolutePath().normalize();
 				MinecraftVibrisRuntimeHost candidateHost = new MinecraftVibrisRuntimeHost(gameDirectory);
@@ -47,9 +49,11 @@ public final class IrisVibrisLifecycle {
 					candidateHost, candidateFrames,
 					IrisVibrisAutomation::frameWaitComplete,
 					IrisVibrisLifecycle::runtimeActivityChanged);
+				priority = WindowsGpuScheduling.bind(gameDirectory, IrisVibrisLifecycle::jobActivityChanged);
 				bootstrap = VibrisBootstrap.start(
 					gameDirectory, adapter, MinecraftRestartLauncher::restart,
-					IrisVibrisLifecycle::jobActivityChanged);
+					priority.observer());
+				gpuScheduling = priority;
 				if (bootstrap.pendingShadersRoot() != null) {
 					candidateHost.configureShaderConfigScratch(bootstrap.pendingShadersRoot());
 				}
@@ -64,11 +68,21 @@ public final class IrisVibrisLifecycle {
 					VibrisClient.LOGGER.warn("Vibris control service is listening but not ready; inspect GetStatus errors.");
 				}
 			} catch (Exception exception) {
+				VibrisBootstrap failed = bootstrap;
+				bootstrap = null;
+				gpuScheduling = null;
 				host = null;
 				runtimeAdapter = null;
 				idleSinceNanos = Long.MAX_VALUE;
-				if (adapter != null) adapter.close();
-				else candidateFrames.close();
+				try {
+					if (failed != null) failed.close();
+					else if (adapter != null) adapter.close();
+					else candidateFrames.close();
+				} catch (Exception cleanup) {
+					exception.addSuppressed(cleanup);
+				} finally {
+					if (priority != null) priority.close();
+				}
 				IrisVibrisAutomation.shutdownComplete();
 				VibrisClient.LOGGER.error("Vibris startup failed; the control service will remain unavailable.", exception);
 			}
@@ -180,7 +194,9 @@ public final class IrisVibrisLifecycle {
 	public static void close() {
 		synchronized (LOCK) {
 			VibrisBootstrap current = bootstrap;
+			WindowsGpuScheduling.Binding priority = gpuScheduling;
 			bootstrap = null;
+			gpuScheduling = null;
 			frames = null;
 			runtimeAdapter = null;
 			idleSinceNanos = Long.MAX_VALUE;
@@ -192,6 +208,7 @@ public final class IrisVibrisLifecycle {
 			} catch (Exception exception) {
 				VibrisClient.LOGGER.error("Vibris shutdown did not complete cleanly.", exception);
 			} finally {
+				if (priority != null) priority.close();
 				IrisVibrisAutomation.shutdownComplete();
 			}
 		}

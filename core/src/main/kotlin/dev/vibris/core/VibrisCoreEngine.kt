@@ -56,7 +56,9 @@ class VibrisCoreEngine internal constructor(
     )
     private val liveJobs = HashMap<String, CoreJob>()
     private val terminalJobs = LinkedHashMap<String, JobSummary>()
-    private val scheduler = FairJobScheduler(maxGlobalQueue, ::schedulerChanged)
+    private val scheduler = FairJobScheduler(
+        maxGlobalQueue, ::schedulerChanged, queueIdle = { notifyJobActivity { queueIdle() } },
+    )
     private val probe = CoreProbe()
     private val sources = SourceRegistry(pendingRoot, probe, maxSourceBytes, maxSourceFiles)
     private val activator = SourceActivator(sources, shaderLink)
@@ -423,6 +425,10 @@ class VibrisCoreEngine internal constructor(
 
     private fun execute(job: CoreJob) {
         var started = false
+        val metadata = metadata(job)
+        val execution = JobActivityObserver.Execution(
+            metadata.jobId, metadata.requestId, metadata.workspaceId, metadata.schedulingGroupId,
+        )
         try {
             job.awaitReady()
             synchronized(this) {
@@ -467,7 +473,7 @@ class VibrisCoreEngine internal constructor(
                 stateChangedLocked("lease-acquired", job.submission.jobId)
             }
             started = true
-            notifyJobActivity(true)
+            notifyJobActivity { executionStarted(execution) }
             probe.jobStarted(job.requestId)
             probe.event(job.requestId, "ACQUIRED_LEASE")
             val terminal = executor.execute(job) { stage -> sendProgress(job, stage) }
@@ -529,7 +535,7 @@ class VibrisCoreEngine internal constructor(
                 try {
                     probe.jobStopped()
                 } finally {
-                    notifyJobActivity(false)
+                    notifyJobActivity { executionFinished(execution) }
                 }
             }
             Thread.interrupted()
@@ -537,9 +543,9 @@ class VibrisCoreEngine internal constructor(
         }
     }
 
-    private fun notifyJobActivity(active: Boolean) {
+    private inline fun notifyJobActivity(event: JobActivityObserver.() -> Unit) {
         try {
-            jobActivityObserver.activityChanged(active)
+            jobActivityObserver.event()
         } catch (_: Exception) {
             // Observability must never affect job execution or terminal delivery.
         }

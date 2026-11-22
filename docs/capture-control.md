@@ -135,6 +135,33 @@ then invokes `restart_executable`. MCP clients retain the planned-restart state,
 sends `ServerHello`, and continue job-starting calls after that handshake instead of reporting the expected disconnect
 as a runtime failure. Status and durable-job control remain available while the old instance drains.
 
+### Windows GPU scheduling for a dedicated game
+
+The Fabric mod can opt a Windows game into WDDM process scheduling. Put a UTF-8
+`config/vibris/windows-gpu-scheduling.txt` in the designated game directory before starting the client.
+Its two lines specify the absolute directory of that same instance and the mode:
+
+```text
+I:/PCL/.minecraft/versions/1.21.11-Vibris
+managed
+```
+
+In `managed` mode the mod requests Idle (0) when the Core queue is idle and Realtime (5) just before a job
+executes. The worker keeps the class through adjacent jobs and the scheduler's bounded continuation grace.
+Queued requests, cancellations before execution, read-only calls, and reconnects do not acquire GPU priority.
+The idle transition follows job finalization and applies after success, failure, or cancellation. Only the
+current game process is affected. The CPU scheduling class is outside this feature.
+
+For paired measurements, `baseline` restores the GPU class read when the mod started. Replace the mode file
+between complete measurement groups after the queue drains. The worker reads the mode at the idle boundary
+and again before the first subsequent job, then retains it while servicing that queue. A process that starts
+without the opt-in needs a new game process to activate it. A malformed replacement retains the active mode.
+
+Use the `Vibris GPU scheduling` entries in the game log to compare the requested class, NTSTATUS and readback
+at `queue_idle`, `job_start`, and `job_end`. Each entry includes the game PID, process start, UTC, monotonic
+time, and the last or current job, request, workspace and group IDs. A denied or clamped request is recorded
+with `verified=false`. Compare timing only among complete, matched groups with observed scheduling classes.
+
 ## Atomic Nsight GPU Trace
 
 Raw replay-capture actions (`capture_pass` and `capture_multi`) are not part of the public MCP or wire action surface.
